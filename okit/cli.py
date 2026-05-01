@@ -72,6 +72,12 @@ def main() -> None:
     p_validate.add_argument("--repo", help="Remote repo to validate")
     p_validate.add_argument("--branch", help="Branch (with --repo)")
 
+    # --- update ---
+    p_update = sub.add_parser("update", help="Re-install artifacts that have changed upstream")
+    p_update.add_argument("--skills", help="Comma-separated skill names to update (default: all tracked)")
+    p_update.add_argument("--agents", help="Comma-separated agent names to update (default: all tracked)")
+    p_update.add_argument("--dry-run", action="store_true", help="Preview without installing")
+
     # --- doctor ---
     sub.add_parser("doctor", help="Check OpenCode directory structure and config")
 
@@ -86,6 +92,7 @@ def main() -> None:
         "install": cmd_install,
         "remove": cmd_remove,
         "installed": cmd_installed,
+        "update": cmd_update,
         "validate": cmd_validate,
         "doctor": cmd_doctor,
     }
@@ -206,6 +213,77 @@ def cmd_installed(args: argparse.Namespace) -> None:
             print(f"    installed: {rec.installed_at}")
         else:
             print(f"  {rec.kind}: {rec.name} — {rec.description[:60]}")
+
+
+def cmd_update(args: argparse.Namespace) -> None:
+    records = load_manifest()
+    if not records:
+        print("No artifacts tracked in manifest. Install something first.")
+        return
+
+    # Filter to requested names if provided
+    filter_skills = {n.strip() for n in args.skills.split(",")} if args.skills else None
+    filter_agents = {n.strip() for n in args.agents.split(",")} if args.agents else None
+
+    to_update = {
+        key: rec for key, rec in records.items()
+        if (filter_skills is None and filter_agents is None)
+        or (rec.kind == "skill" and filter_skills and rec.name in filter_skills)
+        or (rec.kind == "agent" and filter_agents and rec.name in filter_agents)
+    }
+
+    if not to_update:
+        print("No matching tracked artifacts found.")
+        return
+
+    # Group by source repo to avoid re-cloning the same repo multiple times
+    by_repo: dict[str, list] = {}
+    for rec in to_update.values():
+        by_repo.setdefault(rec.repo, []).append(rec)
+
+    updated = skipped = errors = 0
+
+    for repo_url, recs in by_repo.items():
+        repo_path, is_temp = _resolve_source(repo_url, None)
+        try:
+            new_commit = get_repo_commit(repo_path)
+            available = {a.name: a for a in discover_all(repo_path)}
+
+            for rec in recs:
+                artifact = available.get(rec.name)
+                if artifact is None:
+                    print(f"  [MISS] {rec.kind}: {rec.name} — not found in {repo_url}")
+                    errors += 1
+                    continue
+
+                if new_commit == rec.commit and new_commit != "unknown":
+                    print(f"  [----] {rec.kind}: {rec.name} — already up to date ({new_commit[:12]})")
+                    skipped += 1
+                    continue
+
+                if args.dry_run:
+                    print(f"  [dry-run] Would update {rec.kind}: {rec.name} ({rec.commit[:12]} → {new_commit[:12]})")
+                    updated += 1
+                else:
+                    ok, msg = install_artifact(
+                        artifact,
+                        repo_url=repo_url,
+                        commit=new_commit,
+                        force=True,
+                    )
+                    status = "UP" if ok else "ERR"
+                    commit_range = f"{rec.commit[:12]} → {new_commit[:12]}"
+                    print(f"  [{status}] {rec.kind}: {rec.name} ({commit_range})")
+                    if ok:
+                        updated += 1
+                    else:
+                        errors += 1
+        finally:
+            _cleanup_source(repo_path, is_temp)
+
+    print(f"\n{updated} updated, {skipped} up to date, {errors} error(s).")
+    if errors:
+        sys.exit(1)
 
 
 def cmd_validate(args: argparse.Namespace) -> None:
