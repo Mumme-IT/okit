@@ -28,7 +28,7 @@ from okit.core import (
     validate_agent,
     validate_skill,
 )
-from okit.selector import interactive_select
+from okit.selector import interactive_select, interactive_select_grouped
 
 
 # --- Display helpers ---
@@ -583,6 +583,22 @@ def _collect_updateable(
     return updateable, repo_cache
 
 
+def _build_update_grouped_selector_data(updateable: list[_UpdateableItem]) -> list[dict]:
+    """Build grouped selector structure from updateable items, grouped by repo → kind."""
+    by_repo: dict[str, dict[str, list[tuple[int, str]]]] = {}
+    for idx, (rec, _, _, repo_url) in enumerate(updateable):
+        by_repo.setdefault(repo_url, {}).setdefault(rec.kind, []).append((idx, rec.name))
+
+    groups = []
+    for repo_url, by_kind in by_repo.items():
+        children = [
+            {"label": _KIND_LABELS.get(kind, kind.capitalize()), "items": items}
+            for kind, items in by_kind.items()
+        ]
+        groups.append({"label": repo_url, "children": children})
+    return groups
+
+
 def _apply_update_interactive_selection(
     updateable: list[_UpdateableItem],
     has_filter_flags: bool,
@@ -594,8 +610,8 @@ def _apply_update_interactive_selection(
     if has_filter_flags or not sys.stdin.isatty():
         return updateable
 
-    items = [f"{rec.kind}: {rec.name} ({_repo_label(repo_url)})" for rec, _, _, repo_url in updateable]
-    selected_indices = interactive_select(items, header="Select artifacts to update")
+    groups = _build_update_grouped_selector_data(updateable)
+    selected_indices = interactive_select_grouped(groups, header="Select artifacts to update")
     if selected_indices is None:
         return None
     return [updateable[i] for i in selected_indices]
@@ -796,6 +812,19 @@ def _filter_by_kind(artifacts: list, kind: str) -> list:
     return [a for a in artifacts if a.kind == kind]
 
 
+def _build_grouped_selector_data(artifacts: list, repo: str) -> list[dict]:
+    """Build grouped selector structure from a flat artifact list for one repo."""
+    by_kind: dict[str, list[tuple[int, str]]] = {}
+    for idx, artifact in enumerate(artifacts):
+        by_kind.setdefault(artifact.kind, []).append((idx, artifact.name))
+
+    children = [
+        {"label": _KIND_LABELS.get(kind, kind.capitalize()), "items": items}
+        for kind, items in by_kind.items()
+    ]
+    return [{"label": repo, "children": children}]
+
+
 def _apply_interactive_selection(artifacts: list, repo: str) -> list | None:
     """Show interactive selector if stdin is a TTY; return all artifacts otherwise.
 
@@ -804,8 +833,8 @@ def _apply_interactive_selection(artifacts: list, repo: str) -> list | None:
     if not sys.stdin.isatty():
         return artifacts
 
-    items = [f"{a.kind}: {a.name}" for a in artifacts]
-    selected_indices = interactive_select(items, header=f"Select from {repo}")
+    groups = _build_grouped_selector_data(artifacts, repo)
+    selected_indices = interactive_select_grouped(groups, header=f"Select from {repo}")
     if selected_indices is None:
         return None
     return [artifacts[i] for i in selected_indices]
