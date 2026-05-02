@@ -9,6 +9,7 @@ description = "CLI for managing OpenCode skills and agents from Git repositories
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
+dependencies = ["prompt_toolkit>=3.0"]
 authors = [{ name = "okit contributors" }]
 keywords = ["opencode", "skills", "agents", "cli"]
 classifiers = [
