@@ -23,6 +23,7 @@ from okit.core import (
     global_skills_dir,
     install_artifact,
     load_manifest,
+    manifest_key,
     opencode_global_dir,
     remove_artifact,
     validate_agent,
@@ -696,7 +697,7 @@ _SyncItem = tuple[object, str, str, str]  # (artifact, repo_url, status, kind)
 
 def _categorize_artifact(artifact, manifest_records: dict, repo_url: str) -> str:
     """Return the sync status for one discovered artifact."""
-    record = manifest_records.get(artifact.name)
+    record = manifest_records.get(manifest_key(artifact.kind, artifact.name))
     if record is None:
         return _SYNC_NEW
     if check_update_available(record, artifact.path):
