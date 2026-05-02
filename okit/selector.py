@@ -135,7 +135,11 @@ def _deselect_all(selected: set[int]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def interactive_select_grouped(groups: list[dict], header: str = "") -> list[int] | None:
+def interactive_select_grouped(
+    groups: list[dict],
+    header: str = "",
+    preselected: set[int] | None = None,
+) -> list[int] | None:
     """Grouped hierarchical checkbox selector.
 
     Args:
@@ -145,6 +149,7 @@ def interactive_select_grouped(groups: list[dict], header: str = "") -> list[int
                 - "label": str (e.g., "Skills", "Agents")
                 - "items": list of tuples (index: int, label: str)
         header: Optional header text
+        preselected: Set of indices to pre-check when the selector opens
 
     Returns:
         List of selected indices on confirm (Enter)
@@ -161,7 +166,7 @@ def interactive_select_grouped(groups: list[dict], header: str = "") -> list[int
     if not nodes:
         return []
 
-    selected: set[int] = set()
+    selected: set[int] = set(preselected) if preselected else set()
     cursor = 0
     result: list[int] | None = []
     cancelled = False

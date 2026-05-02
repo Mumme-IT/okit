@@ -165,6 +165,15 @@ def main() -> None:
     p_update.add_argument("--agents", help="Comma-separated agent names to update (default: all tracked)")
     p_update.add_argument("--dry-run", action="store_true", help="Preview without installing")
 
+    # --- sync ---
+    p_sync = sub.add_parser(
+        "sync",
+        help="Update existing artifacts and offer new ones from tracked repos",
+    )
+    p_sync.add_argument("--all", action="store_true", dest="sync_all", help="Install all updated + new artifacts")
+    p_sync.add_argument("--force", action="store_true", help="Overwrite existing")
+    p_sync.add_argument("--dry-run", action="store_true", help="Preview without installing")
+
     # --- doctor ---
     sub.add_parser("doctor", help="Check OpenCode directory structure and config")
 
@@ -180,6 +189,7 @@ def main() -> None:
         "remove": cmd_remove,
         "installed": cmd_installed,
         "update": cmd_update,
+        "sync": cmd_sync,
         "validate": cmd_validate,
         "doctor": cmd_doctor,
     }
@@ -671,6 +681,198 @@ def _cleanup_repo_cache(repo_cache: dict[str, tuple["Path", bool]]) -> None:
     """Clean up all temporary repo clones from a repo cache."""
     for repo_path, is_temp in repo_cache.values():
         _cleanup_source(repo_path, is_temp)
+
+
+# ---------------------------------------------------------------------------
+# cmd_sync helpers
+# ---------------------------------------------------------------------------
+
+_SYNC_UPDATED = "updated"
+_SYNC_NEW = "new"
+_SYNC_UP_TO_DATE = "up-to-date"
+
+_SyncItem = tuple[object, str, str, str]  # (artifact, repo_url, status, kind)
+
+
+def _categorize_artifact(artifact, manifest_records: dict, repo_url: str) -> str:
+    """Return the sync status for one discovered artifact."""
+    record = manifest_records.get(artifact.name)
+    if record is None:
+        return _SYNC_NEW
+    if check_update_available(record, artifact.path):
+        return _SYNC_UPDATED
+    return _SYNC_UP_TO_DATE
+
+
+def _collect_sync_items(
+    by_repo: dict[str, list],
+    manifest_records: dict,
+) -> tuple[list[_SyncItem], dict[str, tuple["Path", bool]]]:
+    """Clone each repo, discover all artifacts, and categorize each one.
+
+    Returns (sync_items, repo_cache).  Caller cleans up repo_cache.
+    Items are tuples of (artifact, repo_url, status, kind).
+    Up-to-date items are included so callers can report totals.
+    """
+    sync_items: list[_SyncItem] = []
+    repo_cache: dict[str, tuple[Path, bool]] = {}
+
+    for repo_url in by_repo:
+        repo_path, is_temp = _resolve_source(repo_url, None)
+        repo_cache[repo_url] = (repo_path, is_temp)
+        for artifact in discover_all(repo_path):
+            status = _categorize_artifact(artifact, manifest_records, repo_url)
+            sync_items.append((artifact, repo_url, status, artifact.kind))
+
+    return sync_items, repo_cache
+
+
+def _build_sync_selector_data(
+    sync_items: list[_SyncItem],
+) -> tuple[list[dict], set[int]]:
+    """Build grouped selector data with status labels; return (groups, preselected_indices).
+
+    Updated items are pre-checked; new items are unchecked; up-to-date items are excluded.
+    """
+    selectable = [
+        (idx, item)
+        for idx, item in enumerate(sync_items)
+        if item[2] != _SYNC_UP_TO_DATE
+    ]
+
+    by_repo: dict[str, dict[str, list[tuple[int, str]]]] = {}
+    preselected: set[int] = set()
+
+    for selector_idx, (original_idx, (artifact, repo_url, status, kind)) in enumerate(selectable):
+        label = f"{artifact.name} ({status})"
+        by_repo.setdefault(repo_url, {}).setdefault(kind, []).append((selector_idx, label))
+        if status == _SYNC_UPDATED:
+            preselected.add(selector_idx)
+
+    groups = []
+    for repo_url, by_kind in by_repo.items():
+        children = [
+            {"label": _KIND_LABELS.get(kind, kind.capitalize()), "items": items}
+            for kind, items in by_kind.items()
+        ]
+        groups.append({"label": repo_url, "children": children})
+
+    return groups, preselected
+
+
+def _resolve_sync_selection(
+    sync_items: list[_SyncItem],
+    apply_all: bool,
+) -> list[_SyncItem] | None:
+    """Return the items to install, applying interactive selection when appropriate.
+
+    Returns None if the user cancels.
+    """
+    selectable = [item for item in sync_items if item[2] != _SYNC_UP_TO_DATE]
+    if not selectable:
+        return []
+
+    if apply_all or not sys.stdin.isatty():
+        return selectable
+
+    groups, preselected = _build_sync_selector_data(sync_items)
+    selected_indices = interactive_select_grouped(
+        groups,
+        header="Select artifacts to sync",
+        preselected=preselected,
+    )
+    if selected_indices is None:
+        return None
+
+    return [selectable[i] for i in selected_indices]
+
+
+def _apply_sync_installs(
+    chosen: list[_SyncItem],
+    repo_cache: dict[str, tuple["Path", bool]],
+    args: argparse.Namespace,
+) -> tuple[int, int, int]:
+    """Install the chosen sync items and render results per-repo.
+
+    Returns (installed, skipped, errors) counts.
+    """
+    installed = skipped = errors = 0
+
+    by_repo: dict[str, list[_SyncItem]] = {}
+    for item in chosen:
+        _, repo_url, _, _ = item
+        by_repo.setdefault(repo_url, []).append(item)
+
+    for repo_url, items in by_repo.items():
+        repo_path, _ = repo_cache[repo_url]
+        repo_result = RepoResults(repo=repo_url)
+
+        for artifact, _, status, kind in items:
+            if args.dry_run:
+                repo_result.results.append(
+                    ArtifactResult(name=artifact.name, status="dry", detail=status, kind=kind)
+                )
+                installed += 1
+                continue
+
+            new_commit = get_repo_commit(repo_path)
+            ok, msg = install_artifact(artifact, repo_url=repo_url, commit=new_commit, force=args.force)
+            result_status = "ok" if ok else "skip"
+            repo_result.results.append(
+                ArtifactResult(name=artifact.name, status=result_status, detail=status if ok else msg, kind=kind)
+            )
+            if ok:
+                installed += 1
+            else:
+                errors += 1
+
+        _render_repo_results(repo_result)
+
+    return installed, skipped, errors
+
+
+def cmd_sync(args: argparse.Namespace) -> None:
+    """Sync tracked repos: update existing artifacts and offer new ones."""
+    manifest_records = load_manifest()
+    if not manifest_records:
+        print("Nothing tracked in manifest. Use 'okit install' to add a repo first.")
+        return
+
+    unique_repos = {rec.repo: [] for rec in manifest_records.values()}
+    sync_items, repo_cache = _collect_sync_items(unique_repos, manifest_records)
+
+    if not sync_items:
+        print("No artifacts found in tracked repos.")
+        _cleanup_repo_cache(repo_cache)
+        return
+
+    up_to_date_count = sum(1 for item in sync_items if item[2] == _SYNC_UP_TO_DATE)
+    actionable_count = len(sync_items) - up_to_date_count
+
+    if actionable_count == 0:
+        print(f"All {up_to_date_count} artifact(s) up to date.")
+        _cleanup_repo_cache(repo_cache)
+        return
+
+    apply_all = args.sync_all
+    chosen = _resolve_sync_selection(sync_items, apply_all)
+
+    if chosen is None:
+        print("Cancelled.")
+        _cleanup_repo_cache(repo_cache)
+        return
+
+    if not chosen:
+        print("Nothing selected.")
+        _cleanup_repo_cache(repo_cache)
+        return
+
+    installed, skipped, errors = _apply_sync_installs(chosen, repo_cache, args)
+    _cleanup_repo_cache(repo_cache)
+
+    _print_summary(installed, skipped, errors)
+    if errors:
+        sys.exit(1)
 
 
 def cmd_validate(args: argparse.Namespace) -> None:
