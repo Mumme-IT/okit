@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -17,7 +18,7 @@ SKILL_FILENAME = "SKILL.md"
 FRONTMATTER_FENCE = "---"
 NAME_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
-ArtifactKind = Literal["skill", "agent"]
+ArtifactKind = Literal["skill", "agent", "multi-agent"]
 
 
 @dataclass
@@ -37,6 +38,7 @@ class InstallRecord:
     commit: str
     installed_at: str
     description: str
+    content_hash: str = ""
 
 
 # --- Paths ---
@@ -65,6 +67,9 @@ def project_agents_dir(project: Path) -> Path:
 
 
 def manifest_path() -> Path:
+    env_path = os.environ.get("OKIT_MANIFEST", "")
+    if env_path:
+        return Path(env_path)
     return opencode_global_dir() / "okit-manifest.json"
 
 
@@ -75,27 +80,40 @@ def load_manifest() -> dict[str, InstallRecord]:
     path = manifest_path()
     if not path.exists():
         return {}
-    data = json.loads(path.read_text())
-    records = {}
-    for key, val in data.items():
-        records[key] = InstallRecord(**val)
-    return records
+    raw = json.loads(path.read_text())
+    artifacts = raw.get("artifacts", raw) if "version" in raw else raw
+    return {key: _record_from_dict(val) for key, val in artifacts.items()}
+
+
+def _record_from_dict(val: dict) -> InstallRecord:
+    return InstallRecord(
+        kind=val["kind"],
+        name=val["name"],
+        repo=val["repo"],
+        commit=val["commit"],
+        installed_at=val["installed_at"],
+        description=val["description"],
+        content_hash=val.get("content_hash", ""),
+    )
 
 
 def save_manifest(records: dict[str, InstallRecord]) -> None:
     path = manifest_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = {}
-    for key, rec in records.items():
-        data[key] = {
+    artifacts = {
+        key: {
             "kind": rec.kind,
             "name": rec.name,
             "repo": rec.repo,
             "commit": rec.commit,
             "installed_at": rec.installed_at,
             "description": rec.description,
+            "content_hash": rec.content_hash,
         }
-    path.write_text(json.dumps(data, indent=2) + "\n")
+        for key, rec in records.items()
+    }
+    payload = {"version": 2, "artifacts": artifacts}
+    path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
 def manifest_key(kind: ArtifactKind, name: str) -> str:
@@ -218,8 +236,44 @@ def discover_skills(root: Path) -> list[Artifact]:
     return artifacts
 
 
+def _extract_multi_agent_description(dir_path: Path) -> str:
+    """Extract description from README.md or first .md file's frontmatter in a directory."""
+    candidates = [dir_path / "README.md"] + sorted(
+        p for p in dir_path.iterdir() if p.is_file() and p.suffix == ".md" and p.name != "README.md"
+    )
+    for md_file in candidates:
+        if not md_file.exists():
+            continue
+        meta, _ = parse_frontmatter(md_file.read_text(encoding="utf-8"))
+        desc = meta.get("description", "")
+        if isinstance(desc, list):
+            desc = " ".join(desc)
+        if desc:
+            return desc
+    return f"Multi-agent group: {dir_path.name}"
+
+
+def _discover_agent_file(entry: Path) -> Artifact:
+    """Build an Artifact for a standalone agent .md file."""
+    text = entry.read_text(encoding="utf-8")
+    meta, _ = parse_frontmatter(text)
+    desc = meta.get("description", "")
+    if isinstance(desc, list):
+        desc = " ".join(desc)
+    return Artifact(kind="agent", name=entry.stem, description=desc, path=entry, metadata=meta)
+
+
+def _discover_multi_agent_dir(entry: Path) -> Artifact | None:
+    """Build an Artifact for a subdirectory containing at least one .md file."""
+    md_files = [p for p in entry.iterdir() if p.is_file() and p.suffix == ".md"]
+    if not md_files:
+        return None
+    desc = _extract_multi_agent_description(entry)
+    return Artifact(kind="multi-agent", name=entry.name, description=desc, path=entry)
+
+
 def discover_agents(root: Path) -> list[Artifact]:
-    """Find all valid agent markdown files in a directory tree."""
+    """Find all valid agent artifacts (standalone .md files and multi-agent subdirs)."""
     agents_dir = root / "agents" if (root / "agents").is_dir() else root
     artifacts = []
 
@@ -227,17 +281,13 @@ def discover_agents(root: Path) -> list[Artifact]:
         return artifacts
 
     for entry in sorted(agents_dir.iterdir()):
-        if not entry.is_file() or not entry.name.endswith(".md"):
-            continue
-        text = entry.read_text(encoding="utf-8")
-        meta, _ = parse_frontmatter(text)
-        desc = meta.get("description", "")
-        if isinstance(desc, list):
-            desc = " ".join(desc)
-        name = entry.stem
-        artifacts.append(
-            Artifact(kind="agent", name=name, description=desc, path=entry, metadata=meta)
-        )
+        if entry.is_file() and entry.name.endswith(".md"):
+            artifacts.append(_discover_agent_file(entry))
+        elif entry.is_dir():
+            artifact = _discover_multi_agent_dir(entry)
+            if artifact:
+                artifacts.append(artifact)
+
     return artifacts
 
 
@@ -307,6 +357,31 @@ def _parse_repo_url(url: str) -> tuple[str, str]:
     return url, ""
 
 
+def _hash_directory(path: Path) -> str:
+    """sha256 over sorted relative-path:digest lines for all files in a directory tree."""
+    file_hashes = []
+    for file_path in sorted(path.rglob("*")):
+        if not file_path.is_file():
+            continue
+        rel = file_path.relative_to(path).as_posix()
+        digest = hashlib.sha256(file_path.read_bytes()).hexdigest()
+        file_hashes.append(f"{rel}:{digest}\n")
+    combined = "".join(file_hashes).encode()
+    return hashlib.sha256(combined).hexdigest()
+
+
+def _hash_file(path: Path) -> str:
+    """sha256 of a single file's bytes."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def compute_content_hash(path: Path, kind: ArtifactKind) -> str:
+    """Deterministic content hash for an installed artifact."""
+    if kind in ("skill", "multi-agent"):
+        return _hash_directory(path)
+    return _hash_file(path)
+
+
 # --- Install / Remove ---
 
 
@@ -325,17 +400,21 @@ def install_artifact(
             project_skills_dir(project_dir) if project and project_dir else global_skills_dir()
         )
         target = target_dir / artifact.name
+    elif artifact.kind == "multi-agent":
+        target_dir = (
+            project_agents_dir(project_dir) if project and project_dir else global_agents_dir()
+        )
+        target = target_dir / artifact.name
     else:
         target_dir = (
             project_agents_dir(project_dir) if project and project_dir else global_agents_dir()
         )
         target = target_dir / f"{artifact.name}.md"
 
-    if artifact.kind == "skill":
+    if artifact.kind in ("skill", "multi-agent"):
         if target.exists() and not force:
             return False, f"Already installed: {artifact.name} (use --force to overwrite)"
         target.mkdir(parents=True, exist_ok=True)
-        # Copy entire skill directory
         for item in artifact.path.iterdir():
             dest = target / item.name
             if item.is_file():
@@ -361,16 +440,32 @@ def install_artifact(
             commit=commit,
             installed_at=datetime.now(timezone.utc).isoformat(),
             description=artifact.description[:200],
+            content_hash=compute_content_hash(artifact.path, artifact.kind),
         )
         save_manifest(records)
 
     return True, f"Installed {artifact.kind}: {artifact.name}"
 
 
+def check_update_available(record: InstallRecord, new_artifact_path: Path) -> bool:
+    """Return True if new_artifact_path differs from the installed record.
+
+    Falls back to True for legacy records without a content_hash so that
+    callers always attempt an update rather than silently skipping it.
+    """
+    if not record.content_hash:
+        return True
+    new_hash = compute_content_hash(new_artifact_path, record.kind)
+    return new_hash != record.content_hash
+
+
 def remove_artifact(kind: ArtifactKind, name: str, *, project: bool = False, project_dir: Path | None = None) -> tuple[bool, str]:
     """Remove an installed artifact."""
     if kind == "skill":
         target_dir = project_skills_dir(project_dir) if project and project_dir else global_skills_dir()
+        target = target_dir / name
+    elif kind == "multi-agent":
+        target_dir = project_agents_dir(project_dir) if project and project_dir else global_agents_dir()
         target = target_dir / name
     else:
         target_dir = project_agents_dir(project_dir) if project and project_dir else global_agents_dir()
@@ -379,7 +474,7 @@ def remove_artifact(kind: ArtifactKind, name: str, *, project: bool = False, pro
     if not target.exists():
         return False, f"Not found: {kind} '{name}'"
 
-    if kind == "skill" and target.is_dir():
+    if kind in ("skill", "multi-agent") and target.is_dir():
         shutil.rmtree(target)
     elif target.is_file():
         target.unlink()
