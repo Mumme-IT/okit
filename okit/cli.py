@@ -414,43 +414,135 @@ def _cmd_reinstall_from_active_manifest(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-def cmd_remove(args: argparse.Namespace) -> None:
-    if not args.remove_all and not args.skills and not args.agents:
-        print("Error: specify --all, --skills, or --agents")
-        sys.exit(1)
+def _build_remove_selector_data(records: dict) -> list[dict]:
+    """Build grouped selector structure from manifest records, grouped by repo → kind."""
+    by_repo: dict[str, dict[str, list[tuple[int, str]]]] = {}
+    for idx, rec in enumerate(records.values()):
+        by_repo.setdefault(rec.repo, {}).setdefault(rec.kind, []).append((idx, rec.name))
 
-    project_dir = Path.cwd() if args.project else None
-    items: list[tuple[ArtifactKind, str]] = []
+    groups = []
+    for repo_url, by_kind in by_repo.items():
+        children = [
+            {"label": _KIND_LABELS.get(kind, kind.capitalize()), "items": items}
+            for kind, items in by_kind.items()
+        ]
+        groups.append({"label": repo_url, "children": children})
+    return groups
 
+
+def _resolve_remove_items_interactive(records: dict) -> list[tuple[str, str]] | None:
+    """Show grouped selector for removal; return selected (kind, name) pairs or None on cancel."""
+    all_records = list(records.values())
+    groups = _build_remove_selector_data(records)
+    selected_indices = interactive_select_grouped(groups, header="Select artifacts to remove")
+    if selected_indices is None:
+        return None
+    return [(all_records[i].kind, all_records[i].name) for i in selected_indices]
+
+
+def _collect_remove_items(args: argparse.Namespace) -> list[tuple[str, str]] | None:
+    """Resolve which artifacts to remove; return (kind, name) pairs or None on cancel.
+
+    Returns None if the user cancels the interactive selector.
+    """
     if args.remove_all:
         records = load_manifest()
-        for key, rec in records.items():
-            items.append((rec.kind, rec.name))
-    else:
+        return [(rec.kind, rec.name) for rec in records.values()]
+
+    if args.skills or args.agents:
+        items: list[tuple[str, str]] = []
         if args.skills:
             for name in args.skills.split(","):
                 items.append(("skill", name.strip()))
         if args.agents:
             for name in args.agents.split(","):
                 items.append(("agent", name.strip()))
+        return items
 
+    # Interactive path: no flags given
+    if not sys.stdin.isatty():
+        print("Error: specify artifacts to remove or use --all")
+        sys.exit(1)
+
+    records = load_manifest()
+    if not records:
+        print("Nothing tracked in manifest.")
+        return []
+
+    return _resolve_remove_items_interactive(records)
+
+
+def _confirm_removal(items: list[tuple[str, str]], records: dict) -> bool:
+    """Print a grouped removal summary and prompt for confirmation.
+
+    Returns True if the user confirms, False otherwise.
+    """
+    by_repo: dict[str, list[tuple[str, str]]] = {}
+    rec_lookup = {(r.kind, r.name): r for r in records.values()}
+    for kind, name in items:
+        rec = rec_lookup.get((kind, name))
+        repo = rec.repo if rec else "unknown"
+        by_repo.setdefault(repo, []).append((kind, name))
+
+    for repo_url, repo_items in by_repo.items():
+        _print_repo_header(repo_url)
+        by_kind: dict[str, list[str]] = {}
+        for kind, name in repo_items:
+            by_kind.setdefault(kind, []).append(name)
+        for kind in ("skill", "agent", "multi-agent"):
+            names = by_kind.get(kind, [])
+            if not names:
+                continue
+            _print_kind_header(kind, len(names))
+            for name in names:
+                print(f"│    {name}")
+        _print_repo_footer()
+
+    answer = input(f"\nRemove {len(items)} artifact(s)? [y/N] ").strip().lower()
+    return answer == "y"
+
+
+def _apply_removals(
+    items: list[tuple[str, str]],
+    args: argparse.Namespace,
+    project_dir: Path | None,
+    records: dict,
+) -> None:
+    """Execute removal and render clustered box-drawing output per repo."""
+    by_repo: dict[str, list[tuple[str, str]]] = {}
+    rec_lookup = {(r.kind, r.name): r for r in records.values()}
+    for kind, name in items:
+        rec = rec_lookup.get((kind, name))
+        repo = rec.repo if rec else "unknown"
+        by_repo.setdefault(repo, []).append((kind, name))
+
+    for repo_url, repo_items in by_repo.items():
+        repo_result = RepoResults(repo=repo_url)
+        for kind, name in repo_items:
+            ok, msg = remove_artifact(kind, name, project=args.project, project_dir=project_dir)
+            status = "ok" if ok else "err"
+            repo_result.results.append(ArtifactResult(name=name, status=status, detail=msg if not ok else "", kind=kind))
+        _render_repo_results(repo_result)
+
+
+def cmd_remove(args: argparse.Namespace) -> None:
+    project_dir = Path.cwd() if args.project else None
+
+    items = _collect_remove_items(args)
+    if items is None:
+        print("Cancelled.")
+        return
     if not items:
         print("Nothing to remove.")
         return
 
-    if not args.force:
-        print(f"Will remove {len(items)} artifact(s):")
-        for kind, name in items:
-            print(f"  {kind}: {name}")
-        answer = input("Continue? [y/N] ").strip().lower()
-        if answer != "y":
-            print("Aborted.")
-            return
+    records = load_manifest()
 
-    for kind, name in items:
-        ok, msg = remove_artifact(kind, name, project=args.project, project_dir=project_dir)
-        status = "OK" if ok else "SKIP"
-        print(f"  [{status}] {msg}")
+    if not args.force and not _confirm_removal(items, records):
+        print("Aborted.")
+        return
+
+    _apply_removals(items, args, project_dir, records)
 
 
 def _print_artifact_detail(rec: "InstallRecord") -> None:
