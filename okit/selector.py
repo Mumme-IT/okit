@@ -53,6 +53,32 @@ def _leaf_indices_in_range(nodes: list[_Node], start: int, end: int) -> list[int
     return [i for i in range(start, end) if nodes[i].index is not None]
 
 
+def _build_visible(nodes: list[_Node], collapsed: set[int]) -> list[int]:
+    """Return positions of nodes that are currently visible (not hidden by a collapsed ancestor)."""
+    visible: list[int] = []
+    hidden_until: int = len(nodes)  # nodes[i] with i < hidden_until but inside a collapsed range are skipped
+
+    # We scan linearly; maintain a stack of active collapsed ranges.
+    skip_stack: list[int] = []  # stack of range-end values
+
+    for pos, node in enumerate(nodes):
+        # Pop exhausted ranges
+        while skip_stack and pos >= skip_stack[-1]:
+            skip_stack.pop()
+
+        if skip_stack:
+            # Inside a collapsed subtree — skip
+            continue
+
+        visible.append(pos)
+
+        if node.children_range is not None and pos in collapsed:
+            # Push the end of this collapsed range so children are skipped
+            skip_stack.append(node.children_range[1])
+
+    return visible
+
+
 # ---------------------------------------------------------------------------
 # Render helpers
 # ---------------------------------------------------------------------------
@@ -61,6 +87,8 @@ _INDENT = ("", "  ", "    ")
 _CHECKBOX_CHECKED = "[x]"
 _CHECKBOX_EMPTY = "[ ]"
 _CHECKBOX_PARTIAL = "[-]"
+_EXPAND_ICON = "▶"
+_COLLAPSE_ICON = "▼"
 
 
 def _checkbox_for_parent(nodes: list[_Node], node_pos: int, selected: set[int]) -> str:
@@ -79,18 +107,33 @@ def _checkbox_for_parent(nodes: list[_Node], node_pos: int, selected: set[int]) 
     return _CHECKBOX_PARTIAL
 
 
-def _render_lines(nodes: list[_Node], selected: set[int], cursor: int) -> list[str]:
-    """Build display lines for all nodes."""
+def _render_lines(
+    nodes: list[_Node],
+    selected: set[int],
+    cursor: int,
+    collapsed: set[int],
+    visible: list[int],
+    scroll_offset: int,
+    viewport_height: int,
+) -> list[str]:
+    """Build display lines for the visible viewport slice."""
     lines = []
-    for pos, node in enumerate(nodes):
+    viewport_slice = visible[scroll_offset : scroll_offset + viewport_height]
+    for pos in viewport_slice:
+        node = nodes[pos]
         indent = _INDENT[node.depth]
         if node.index is not None:
             checkbox = _CHECKBOX_CHECKED if node.index in selected else _CHECKBOX_EMPTY
+            expand_icon = "  "
         else:
             checkbox = _checkbox_for_parent(nodes, pos, selected)
+            if node.children_range is not None:
+                expand_icon = f"{_EXPAND_ICON} " if pos in collapsed else f"{_COLLAPSE_ICON} "
+            else:
+                expand_icon = "  "
 
         prefix = "> " if pos == cursor else "  "
-        lines.append(f"{prefix}{indent}{checkbox} {node.label}")
+        lines.append(f"{prefix}{indent}{expand_icon}{checkbox} {node.label}")
     return lines
 
 
@@ -131,6 +174,21 @@ def _deselect_all(selected: set[int]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Scroll helpers
+# ---------------------------------------------------------------------------
+
+
+def _clamp_scroll(scroll_offset: int, cursor_vis_pos: int, viewport_height: int, total_visible: int) -> int:
+    """Adjust scroll so cursor stays within viewport."""
+    if cursor_vis_pos < scroll_offset:
+        return cursor_vis_pos
+    if cursor_vis_pos >= scroll_offset + viewport_height:
+        return cursor_vis_pos - viewport_height + 1
+    max_scroll = max(0, total_visible - viewport_height)
+    return min(scroll_offset, max_scroll)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -167,11 +225,19 @@ def interactive_select_grouped(
         return []
 
     selected: set[int] = set(preselected) if preselected else set()
+    collapsed: set[int] = set()
     cursor = 0
+    scroll_offset = 0
     result: list[int] | None = []
     cancelled = False
 
-    hint = "↑↓ navigate  Space toggle  Enter confirm  Esc cancel  a select-all  n deselect-all"
+    # Header lines occupy 3 rows (title + hint + blank line)
+    HEADER_ROWS = 3
+
+    hint = (
+        "↑↓ navigate  ◀▶ collapse/expand  Space toggle  "
+        "Enter confirm  Esc cancel  a select-all  n deselect-all"
+    )
     title_text = header or "Select artifacts"
 
     style = Style.from_dict({
@@ -180,13 +246,29 @@ def interactive_select_grouped(
         "cursor": "bold fg:ansigreen",
     })
 
+    def _visible() -> list[int]:
+        return _build_visible(nodes, collapsed)
+
     def get_content():
-        lines = _render_lines(nodes, selected, cursor)
+        nonlocal scroll_offset
+        visible = _visible()
+        cursor_vis_pos = visible.index(cursor) if cursor in visible else 0
+
+        app_height = app.output.get_size().rows
+        viewport_height = max(1, app_height - HEADER_ROWS)
+
+        scroll_offset = _clamp_scroll(scroll_offset, cursor_vis_pos, viewport_height, len(visible))
+
+        lines = _render_lines(nodes, selected, cursor, collapsed, visible, scroll_offset, viewport_height)
+
         result_fragments = []
         result_fragments.append(("class:title", f"{title_text}\n"))
         result_fragments.append(("class:hint", f"{hint}\n\n"))
-        for i, line in enumerate(lines):
-            cls = "class:cursor" if i == cursor else ""
+
+        for vis_idx, line in enumerate(lines):
+            abs_vis_pos = scroll_offset + vis_idx
+            abs_node_pos = visible[abs_vis_pos] if abs_vis_pos < len(visible) else -1
+            cls = "class:cursor" if abs_node_pos == cursor else ""
             result_fragments.append((cls, line + "\n"))
         return result_fragments
 
@@ -195,12 +277,30 @@ def interactive_select_grouped(
     @kb.add("up")
     def _move_up(event):
         nonlocal cursor
-        cursor = max(0, cursor - 1)
+        visible = _visible()
+        vis_pos = visible.index(cursor) if cursor in visible else 0
+        if vis_pos > 0:
+            cursor = visible[vis_pos - 1]
 
     @kb.add("down")
     def _move_down(event):
         nonlocal cursor
-        cursor = min(len(nodes) - 1, cursor + 1)
+        visible = _visible()
+        vis_pos = visible.index(cursor) if cursor in visible else 0
+        if vis_pos < len(visible) - 1:
+            cursor = visible[vis_pos + 1]
+
+    @kb.add("right")
+    def _expand(event):
+        node = nodes[cursor]
+        if node.children_range is not None and cursor in collapsed:
+            collapsed.discard(cursor)
+
+    @kb.add("left")
+    def _collapse(event):
+        node = nodes[cursor]
+        if node.children_range is not None and cursor not in collapsed:
+            collapsed.add(cursor)
 
     @kb.add("space")
     def _toggle(event):
