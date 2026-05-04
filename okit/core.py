@@ -218,12 +218,8 @@ def discover_skills(root: Path) -> list[Artifact]:
     if not skills_dir.is_dir():
         return artifacts
 
-    for entry in sorted(skills_dir.iterdir()):
-        if not entry.is_dir():
-            continue
-        skill_file = entry / SKILL_FILENAME
-        if not skill_file.exists():
-            continue
+    for skill_file in sorted(skills_dir.rglob(SKILL_FILENAME)):
+        entry = skill_file.parent
         text = skill_file.read_text(encoding="utf-8")
         meta, _ = parse_frontmatter(text)
         name = meta.get("name", entry.name)
