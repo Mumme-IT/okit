@@ -6,10 +6,10 @@ CLI for managing OpenCode skills and agents from Git repositories.
 
 ```bash
 # From git (recommended)
-pipx install git+ssh://git@git.mumme-it.de:2222/Mumme-IT/okit.git
+pipx install git+https://git.mumme-it.de/Mumme-IT/okit.git
 
 # Or for development
-git clone ssh://git@git.mumme-it.de:2222/Mumme-IT/okit.git
+git clone https://git.mumme-it.de/Mumme-IT/okit.git
 cd okit
 pip install -e .
 ```
@@ -35,6 +35,9 @@ okit install user/skills-and-agents --all --project
 # Preview without installing
 okit install user/skills-and-agents --all --dry-run
 
+# Install from a manifest file
+okit install --manifest path/to/manifest.json
+
 # Show what's installed
 okit installed
 okit installed --detail
@@ -43,6 +46,16 @@ okit installed --detail
 okit remove --skills example-skill
 okit remove --agents example-reviewer
 okit remove --all --force
+
+# Update artifacts that changed upstream
+okit update
+okit update --skills clean-code,tests-expert
+okit update --dry-run
+
+# Sync tracked repos: update existing, offer new artifacts
+okit sync
+okit sync --all
+okit sync --dry-run
 
 # Validate a local directory or remote repo
 okit validate .
