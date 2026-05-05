@@ -1049,8 +1049,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         binary_ok = provider.is_available()
         checks.append((f"[{provider.id}] CLI '{provider.detect_command}' on PATH", binary_ok))
 
-        s_dir = provider.skills_dir(None)
-        a_dir = provider.agents_dir(None)
+        s_dir = provider.installed_paths("skill", "_probe", project_dir=None)[0].parent
+        a_dir = provider.installed_paths("agent", "_probe", project_dir=None)[0].parent
         checks.append((f"[{provider.id}] skills dir ({s_dir})", s_dir.is_dir()))
         checks.append((f"[{provider.id}] agents dir ({a_dir})", a_dir.is_dir()))
 
