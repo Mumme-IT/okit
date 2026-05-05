@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from okit import __version__
+from okit import config as okit_config
 from okit.core import (
     ArtifactKind,
     InstallRecord,
@@ -19,17 +20,16 @@ from okit.core import (
     discover_all,
     discover_skills,
     get_repo_commit,
-    global_agents_dir,
-    global_skills_dir,
     install_artifact,
     load_manifest,
     manifest_key,
-    opencode_global_dir,
     remove_artifact,
     validate_agent,
     validate_skill,
 )
+from okit.providers import ALL_PROVIDERS, PROVIDERS_BY_ID
 from okit.selector import interactive_select, interactive_select_grouped
+from okit.setup import run_setup
 
 
 # --- Display helpers ---
@@ -178,7 +178,14 @@ def main() -> None:
     # --- doctor ---
     sub.add_parser("doctor", help="Check OpenCode directory structure and config")
 
+    # --- setup ---
+    sub.add_parser("setup", help="Configure okit (providers, etc.)")
+
     args = parser.parse_args()
+
+    # Auto-init the config on first contact, regardless of which command runs.
+    # Detection writes a default config enabling every CLI we find on PATH.
+    okit_config.ensure_initialized()
 
     if not args.command:
         parser.print_help()
@@ -193,6 +200,7 @@ def main() -> None:
         "sync": cmd_sync,
         "validate": cmd_validate,
         "doctor": cmd_doctor,
+        "setup": cmd_setup,
     }
     commands[args.command](args)
 
@@ -1020,29 +1028,37 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     git_ok = shutil.which("git") is not None
     checks.append(("git available", git_ok))
 
-    # Check OpenCode config dir
-    oc_dir = opencode_global_dir()
-    checks.append((f"Config dir exists ({oc_dir})", oc_dir.is_dir()))
+    # Config + enabled providers
+    cfg = okit_config.load()
+    cfg_path = okit_config.config_path()
+    checks.append((f"okit config exists ({cfg_path})", cfg_path.exists()))
+    checks.append(
+        (
+            f"Enabled providers: {', '.join(cfg.enabled_providers) or '(none)'}",
+            bool(cfg.enabled_providers),
+        )
+    )
 
-    # Check skills dir
-    s_dir = global_skills_dir()
-    checks.append((f"Skills dir exists ({s_dir})", s_dir.is_dir()))
+    # Per-provider directory + binary checks
+    for provider in ALL_PROVIDERS:
+        enabled = cfg.is_enabled(provider.id)
+        if not enabled:
+            checks.append((f"[{provider.id}] disabled (run 'okit setup' to enable)", True))
+            continue
 
-    # Check agents dir
-    a_dir = global_agents_dir()
-    checks.append((f"Agents dir exists ({a_dir})", a_dir.is_dir()))
+        binary_ok = provider.is_available()
+        checks.append((f"[{provider.id}] CLI '{provider.detect_command}' on PATH", binary_ok))
 
-    # Check manifest
+        s_dir = provider.skills_dir(None)
+        a_dir = provider.agents_dir(None)
+        checks.append((f"[{provider.id}] skills dir ({s_dir})", s_dir.is_dir()))
+        checks.append((f"[{provider.id}] agents dir ({a_dir})", a_dir.is_dir()))
+
+    # Manifest
     from okit.core import manifest_path as mp
 
     mpath = mp()
     checks.append((f"Manifest exists ({mpath})", mpath.exists()))
-
-    # Count installed
-    skill_count = len(list(s_dir.iterdir())) if s_dir.is_dir() else 0
-    agent_count = len([f for f in a_dir.iterdir() if f.suffix == ".md"]) if a_dir.is_dir() else 0
-    checks.append((f"Skills installed: {skill_count}", True))
-    checks.append((f"Agents installed: {agent_count}", True))
 
     print("okit doctor\n")
     all_ok = True
@@ -1053,9 +1069,14 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             all_ok = False
 
     if not all_ok:
-        print("\nSome checks failed. Run 'okit install' to set up missing components.")
+        print("\nSome checks failed. Run 'okit setup' to configure providers, "
+              "or 'okit install' to populate directories.")
         sys.exit(1)
     print("\nAll checks passed.")
+
+
+def cmd_setup(args: argparse.Namespace) -> None:
+    run_setup()
 
 
 # --- Helpers ---
@@ -1150,12 +1171,14 @@ def _select_artifacts(artifacts: list, args: argparse.Namespace) -> list:
 
 
 def _describe_target(artifact, project: bool, project_dir: Path | None) -> str:
-    if artifact.kind == "skill":
-        base = global_skills_dir() if not project else project_dir / ".opencode" / "skills"
-        return str(base / artifact.name)
-    else:
-        base = global_agents_dir() if not project else project_dir / ".opencode" / "agents"
-        return str(base / f"{artifact.name}.md")
+    """Render provider:path entries for dry-run output."""
+    project_root = project_dir if project else None
+    providers = okit_config.enabled_providers()
+    parts = []
+    for p in providers:
+        for path in p.installed_paths(artifact.kind, artifact.name, project_dir=project_root):
+            parts.append(f"{p.id}:{path}")
+    return ", ".join(parts) if parts else "(no enabled provider)"
 
 
 def _print_artifact_table(artifacts: list, *, detail: bool = False) -> None:

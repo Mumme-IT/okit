@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -39,6 +38,9 @@ class InstallRecord:
     installed_at: str
     description: str
     content_hash: str = ""
+    # Providers this artifact was installed into. Empty list = legacy record
+    # from before multi-provider support; treated as ["opencode"] for compat.
+    providers: list[str] = field(default_factory=list)
 
 
 # --- Paths ---
@@ -94,6 +96,7 @@ def _record_from_dict(val: dict) -> InstallRecord:
         installed_at=val["installed_at"],
         description=val["description"],
         content_hash=val.get("content_hash", ""),
+        providers=list(val.get("providers", [])),
     )
 
 
@@ -109,6 +112,7 @@ def save_manifest(records: dict[str, InstallRecord]) -> None:
             "installed_at": rec.installed_at,
             "description": rec.description,
             "content_hash": rec.content_hash,
+            "providers": list(rec.providers),
         }
         for key, rec in records.items()
     }
@@ -389,46 +393,49 @@ def install_artifact(
     repo_url: str = "",
     commit: str = "",
     force: bool = False,
+    providers: "list | None" = None,
 ) -> tuple[bool, str]:
-    """Install a single artifact to the target directory."""
-    if artifact.kind == "skill":
-        target_dir = (
-            project_skills_dir(project_dir) if project and project_dir else global_skills_dir()
-        )
-        target = target_dir / artifact.name
-    elif artifact.kind == "multi-agent":
-        target_dir = (
-            project_agents_dir(project_dir) if project and project_dir else global_agents_dir()
-        )
-        target = target_dir / artifact.name
-    else:
-        target_dir = (
-            project_agents_dir(project_dir) if project and project_dir else global_agents_dir()
-        )
-        target = target_dir / f"{artifact.name}.md"
+    """Install an artifact to every enabled provider's layout.
 
-    if artifact.kind in ("skill", "multi-agent"):
-        if target.exists() and not force:
-            return False, f"Already installed: {artifact.name} (use --force to overwrite)"
-        target.mkdir(parents=True, exist_ok=True)
-        for item in artifact.path.iterdir():
-            dest = target / item.name
-            if item.is_file():
-                shutil.copy2(item, dest)
-            elif item.is_dir():
-                if dest.exists():
-                    shutil.rmtree(dest)
-                shutil.copytree(item, dest)
-    else:
-        if target.exists() and not force:
-            return False, f"Already installed: {artifact.name} (use --force to overwrite)"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(artifact.path, target)
+    Each provider owns the full story — paths, filenames, content transforms.
+    The manifest tracks which providers received this artifact so removal can
+    clean up exactly the right locations.
 
-    # Update manifest
+    ``providers`` defaults to whatever ``okit.config`` reports as enabled.
+    Pass an explicit list to scope installation (used by tests and by the
+    setup TUI when applying a freshly-changed provider list).
+    """
+    from okit.config import enabled_providers
+
+    targets = providers if providers is not None else enabled_providers()
+    if not targets:
+        return False, f"No enabled provider: {artifact.kind}: {artifact.name}"
+
+    project_root = project_dir if project else None
+    installed_provider_ids: list[str] = []
+    skipped_messages: list[str] = []
+
+    for provider in targets:
+        # Use installed_paths to check for prior install (pre-write, so no
+        # scanning needed — just deterministic path calculation).
+        prior_paths = provider.installed_paths(artifact.kind, artifact.name, project_dir=project_root)
+        if prior_paths and any(p.exists() for p in prior_paths) and not force:
+            skipped_messages.append(
+                f"{provider.id}: already installed (use --force to overwrite)"
+            )
+            continue
+        provider.install(artifact, project_dir=project_root)
+        installed_provider_ids.append(provider.id)
+
+    if not installed_provider_ids:
+        return False, skipped_messages[0] if skipped_messages else "No providers installed"
+
     if not project:
         records = load_manifest()
         key = manifest_key(artifact.kind, artifact.name)
+        existing = records.get(key)
+        prior_providers = list(existing.providers) if existing else []
+        merged_providers = sorted(set(prior_providers) | set(installed_provider_ids))
         records[key] = InstallRecord(
             kind=artifact.kind,
             name=artifact.name,
@@ -437,10 +444,12 @@ def install_artifact(
             installed_at=datetime.now(timezone.utc).isoformat(),
             description=artifact.description[:200],
             content_hash=compute_content_hash(artifact.path, artifact.kind),
+            providers=merged_providers,
         )
         save_manifest(records)
 
-    return True, f"Installed {artifact.kind}: {artifact.name}"
+    detail = f"{artifact.kind}: {artifact.name} → {', '.join(installed_provider_ids)}"
+    return True, f"Installed {detail}"
 
 
 def check_update_available(record: InstallRecord, new_artifact_path: Path) -> bool:
@@ -455,34 +464,56 @@ def check_update_available(record: InstallRecord, new_artifact_path: Path) -> bo
     return new_hash != record.content_hash
 
 
-def remove_artifact(kind: ArtifactKind, name: str, *, project: bool = False, project_dir: Path | None = None) -> tuple[bool, str]:
-    """Remove an installed artifact."""
-    if kind == "skill":
-        target_dir = project_skills_dir(project_dir) if project and project_dir else global_skills_dir()
-        target = target_dir / name
-    elif kind == "multi-agent":
-        target_dir = project_agents_dir(project_dir) if project and project_dir else global_agents_dir()
-        target = target_dir / name
-    else:
-        target_dir = project_agents_dir(project_dir) if project and project_dir else global_agents_dir()
-        target = target_dir / f"{name}.md"
+def remove_artifact(
+    kind: ArtifactKind,
+    name: str,
+    *,
+    project: bool = False,
+    project_dir: Path | None = None,
+    providers: "list | None" = None,
+) -> tuple[bool, str]:
+    """Remove an installed artifact from every provider that holds it.
 
-    if not target.exists():
-        return False, f"Not found: {kind} '{name}'"
+    For global removal, providers are taken from the manifest record (so we
+    clean up exactly where we previously installed). For project removal,
+    we ask every currently-enabled provider — there's no per-project record.
+    """
+    from okit.config import enabled_providers
+    from okit.providers import PROVIDERS_BY_ID, Provider
 
-    if kind in ("skill", "multi-agent") and target.is_dir():
-        shutil.rmtree(target)
-    elif target.is_file():
-        target.unlink()
+    project_root = project_dir if project else None
 
-    # Update manifest
+    # Decide which providers to ask.
+    record: InstallRecord | None = None
     if not project:
         records = load_manifest()
-        key = manifest_key(kind, name)
-        records.pop(key, None)
+        record = records.get(manifest_key(kind, name))
+
+    if providers is not None:
+        targets: list[Provider] = providers
+    elif record is not None and record.providers:
+        targets = [PROVIDERS_BY_ID[pid] for pid in record.providers if pid in PROVIDERS_BY_ID]
+    else:
+        # Legacy record (pre-providers field) or project install: try all enabled.
+        targets = enabled_providers()
+
+    removed_any = False
+    removed_count = 0
+    for provider in targets:
+        ok, paths = provider.remove(kind, name, project_dir=project_root)
+        if ok:
+            removed_any = True
+            removed_count += len(paths)
+
+    if not removed_any:
+        return False, f"Not found: {kind} '{name}'"
+
+    if not project:
+        records = load_manifest()
+        records.pop(manifest_key(kind, name), None)
         save_manifest(records)
 
-    return True, f"Removed {kind}: {name}"
+    return True, f"Removed {kind}: {name} ({removed_count} file(s) deleted)"
 
 
 # --- Validation ---
