@@ -37,7 +37,8 @@ _UNKNOWN_FIELDS = frozenset({"hidden", "permission", "target", "mode"})
 def _filter_agent_content(text: str) -> str:
     """Strip unknown frontmatter fields and normalise the model value.
 
-    - Removes lines whose key is in ``_UNKNOWN_FIELDS``.
+    - Removes top-level keys in ``_UNKNOWN_FIELDS`` *and* their indented block
+      children (e.g. a ``permission:`` mapping with nested keys).
     - Rewrites ``model: provider/model-id`` → ``model: model-id``.
 
     Only the YAML frontmatter block (between the first pair of ``---`` fences)
@@ -49,17 +50,32 @@ def _filter_agent_content(text: str) -> str:
 
     fence_open, fm_body, fence_close, body = match.groups()
     filtered_lines: list[str] = []
+    skip_indented = False  # True while consuming block children of a dropped key
+
     for line in fm_body.splitlines(keepends=True):
+        # A line that starts with whitespace is a block child of the previous key.
+        if line and line[0] in (" ", "\t"):
+            if skip_indented:
+                continue
+            filtered_lines.append(line)
+            continue
+
+        # Top-level key line (no leading whitespace).
+        skip_indented = False
         key_match = re.match(r"^(\w+)\s*:", line)
         if not key_match:
             filtered_lines.append(line)
             continue
+
         key = key_match.group(1)
         if key in _UNKNOWN_FIELDS:
+            skip_indented = True  # also drop indented children
             continue
+
         if key == "model":
             # Transform "provider/model-id" → "model-id".
             line = re.sub(r"^(model\s*:\s*)[^/\n]+/", r"\1", line)
+
         filtered_lines.append(line)
 
     return fence_open + "".join(filtered_lines) + fence_close + body
