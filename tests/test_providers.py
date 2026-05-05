@@ -27,7 +27,7 @@ from okit.core import (
     save_manifest,
 )
 from okit.providers import ALL_PROVIDERS, get_provider
-from okit.providers.copilot import CopilotProvider
+from okit.providers.copilot import CopilotProvider, _filter_agent_content
 from okit.providers.opencode import OpencodeProvider
 
 
@@ -282,9 +282,104 @@ class TestConfigInit:
         assert cfg.enabled_providers == ["opencode"]
 
 
+
+
+# ---------------------------------------------------------------------------
+# Copilot frontmatter filtering
+# ---------------------------------------------------------------------------
+
+
+class TestCopilotFrontmatterFilter:
+    def test_strips_unknown_fields(self):
+        src = "---\ndescription: x\nhidden: true\npermission: read\ntarget: foo\nmode: ask\n---\nbody\n"
+        result = _filter_agent_content(src)
+        assert "hidden" not in result
+        assert "permission" not in result
+        assert "target" not in result
+        assert "mode" not in result
+        assert "description: x" in result
+
+    def test_normalises_model_with_provider_prefix(self):
+        src = "---\nmodel: openai/gpt-4o\n---\nbody\n"
+        result = _filter_agent_content(src)
+        assert "model: gpt-4o" in result
+        assert "openai/" not in result
+
+    def test_preserves_model_without_prefix(self):
+        src = "---\nmodel: gpt-4o\n---\nbody\n"
+        result = _filter_agent_content(src)
+        assert "model: gpt-4o" in result
+
+    def test_body_untouched(self):
+        src = "---\ndescription: x\n---\nhidden: yes\npermission: denied\n"
+        result = _filter_agent_content(src)
+        assert result.endswith("hidden: yes\npermission: denied\n")
+
+    def test_no_frontmatter_returned_verbatim(self):
+        src = "just body\nhidden: true\n"
+        assert _filter_agent_content(src) == src
+
+    def test_installed_agent_has_unknown_fields_removed(self, all_providers_enabled, isolated_env):
+        src = isolated_env / "src_agents"
+        src.mkdir(exist_ok=True)
+        f = src / "checker.md"
+        f.write_text("---\ndescription: d\nhidden: true\nmodel: anthropic/claude-3\n---\nbody\n")
+        artifact = Artifact(kind="agent", name="checker", description="d", path=f)
+        install_artifact(artifact, repo_url="r", commit="c")
+
+        cp_path = CopilotProvider().installed_paths("agent", "checker", project_dir=None)[0]
+        content = cp_path.read_text()
+        assert "hidden" not in content
+        assert "model: claude-3" in content
+
+
 # ---------------------------------------------------------------------------
 # Provider registry
 # ---------------------------------------------------------------------------
+
+
+class TestCopilotFrontmatterFilter:
+    def test_strips_unknown_fields(self):
+        src = "---\ndescription: x\nhidden: true\npermission: read\ntarget: foo\nmode: ask\n---\nbody\n"
+        result = _filter_agent_content(src)
+        assert "hidden" not in result
+        assert "permission" not in result
+        assert "target" not in result
+        assert "mode" not in result
+        assert "description: x" in result
+
+    def test_normalises_model_with_provider_prefix(self):
+        src = "---\nmodel: openai/gpt-4o\n---\nbody\n"
+        result = _filter_agent_content(src)
+        assert "model: gpt-4o" in result
+        assert "openai/" not in result
+
+    def test_preserves_model_without_prefix(self):
+        src = "---\nmodel: gpt-4o\n---\nbody\n"
+        result = _filter_agent_content(src)
+        assert "model: gpt-4o" in result
+
+    def test_body_untouched(self):
+        src = "---\ndescription: x\n---\nhidden: yes\npermission: denied\n"
+        result = _filter_agent_content(src)
+        assert result.endswith("hidden: yes\npermission: denied\n")
+
+    def test_no_frontmatter_returned_verbatim(self):
+        src = "just body\nhidden: true\n"
+        assert _filter_agent_content(src) == src
+
+    def test_installed_agent_has_unknown_fields_removed(self, all_providers_enabled, isolated_env):
+        src = isolated_env / "src_agents"
+        src.mkdir(exist_ok=True)
+        f = src / "checker.md"
+        f.write_text("---\ndescription: d\nhidden: true\nmodel: anthropic/claude-3\n---\nbody\n")
+        artifact = Artifact(kind="agent", name="checker", description="d", path=f)
+        install_artifact(artifact, repo_url="r", commit="c")
+
+        cp_path = CopilotProvider().installed_paths("agent", "checker", project_dir=None)[0]
+        content = cp_path.read_text()
+        assert "hidden" not in content
+        assert "model: claude-3" in content
 
 
 class TestRegistry:

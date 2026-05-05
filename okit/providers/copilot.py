@@ -20,6 +20,7 @@ References:
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -28,6 +29,47 @@ from okit.providers.base import Provider
 
 if TYPE_CHECKING:
     from okit.core import Artifact, ArtifactKind
+
+# Frontmatter fields not recognised by Copilot — stripped on install.
+_UNKNOWN_FIELDS = frozenset({"hidden", "permission", "target", "mode"})
+
+
+def _filter_agent_content(text: str) -> str:
+    """Strip unknown frontmatter fields and normalise the model value.
+
+    - Removes lines whose key is in ``_UNKNOWN_FIELDS``.
+    - Rewrites ``model: provider/model-id`` → ``model: model-id``.
+
+    Only the YAML frontmatter block (between the first pair of ``---`` fences)
+    is touched; the body is returned verbatim.
+    """
+    match = re.match(r"^(---\n)(.*?\n)(---\n)(.*)", text, re.DOTALL)
+    if not match:
+        return text
+
+    fence_open, fm_body, fence_close, body = match.groups()
+    filtered_lines: list[str] = []
+    for line in fm_body.splitlines(keepends=True):
+        key_match = re.match(r"^(\w+)\s*:", line)
+        if not key_match:
+            filtered_lines.append(line)
+            continue
+        key = key_match.group(1)
+        if key in _UNKNOWN_FIELDS:
+            continue
+        if key == "model":
+            # Transform "provider/model-id" → "model-id".
+            line = re.sub(r"^(model\s*:\s*)[^/\n]+/", r"\1", line)
+        filtered_lines.append(line)
+
+    return fence_open + "".join(filtered_lines) + fence_close + body
+
+
+def _install_agent_file(src: Path, dest: Path) -> None:
+    """Write *src* to *dest* with Copilot-specific frontmatter filtering."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    content = src.read_text(encoding="utf-8")
+    dest.write_text(_filter_agent_content(content), encoding="utf-8")
 
 
 class CopilotProvider(Provider):
@@ -72,21 +114,19 @@ class CopilotProvider(Provider):
 
     def install_agent(self, artifact: "Artifact", *, project_dir: Path | None) -> list[Path]:
         dest_dir = self._agents_dir(project_dir)
-        dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / self._agent_filename(artifact.name)
-        shutil.copy2(artifact.path, dest)
+        _install_agent_file(artifact.path, dest)
         return [dest]
 
     def install_multi_agent(self, artifact: "Artifact", *, project_dir: Path | None) -> list[Path]:
         # Copilot cannot recurse into subdirectories, so flatten the group:
         # each member .md → <member>.agent.md directly under agents root.
         dest_dir = self._agents_dir(project_dir)
-        dest_dir.mkdir(parents=True, exist_ok=True)
         written: list[Path] = []
         for member in sorted(artifact.path.iterdir()):
             if member.is_file() and member.suffix == ".md":
                 dest = dest_dir / self._agent_filename(member.stem)
-                shutil.copy2(member, dest)
+                _install_agent_file(member, dest)
                 written.append(dest)
         return written
 
