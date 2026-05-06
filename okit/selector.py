@@ -347,6 +347,100 @@ def interactive_select_grouped(
     return result
 
 
+def interactive_menu(items: list[str], header: str = "") -> int | None:
+    """Simple arrow-key menu — navigate with ↑↓, confirm with Enter, cancel with Esc/Ctrl+C.
+
+    No checkboxes. One item is highlighted at a time. Returns the selected index or None.
+    """
+    if not items:
+        return None
+
+    from prompt_toolkit import Application
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import Layout
+    from prompt_toolkit.layout.containers import HSplit, Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.styles import Style
+
+    cursor = 0
+    scroll_offset = 0
+    result: int | None = None
+    cancelled = False
+
+    HEADER_ROWS = 3
+    hint = "↑↓ navigate  Enter select  Esc cancel"
+    title_text = header or "Select"
+
+    style = Style.from_dict({
+        "title": "bold",
+        "hint": "fg:ansiblue",
+        "cursor": "bold fg:ansigreen",
+    })
+
+    def get_content():
+        nonlocal scroll_offset
+        app_height = app.output.get_size().rows
+        viewport_height = max(1, app_height - HEADER_ROWS)
+        scroll_offset = _clamp_scroll(scroll_offset, cursor, viewport_height, len(items))
+
+        fragments = []
+        fragments.append(("class:title", f"{title_text}\n"))
+        fragments.append(("class:hint", f"{hint}\n\n"))
+
+        for i, label in enumerate(items[scroll_offset : scroll_offset + viewport_height]):
+            abs_i = scroll_offset + i
+            prefix = "> " if abs_i == cursor else "  "
+            cls = "class:cursor" if abs_i == cursor else ""
+            fragments.append((cls, f"{prefix}{label}\n"))
+        return fragments
+
+    kb = KeyBindings()
+
+    @kb.add("up")
+    def _up(event):
+        nonlocal cursor
+        if cursor > 0:
+            cursor -= 1
+
+    @kb.add("down")
+    def _down(event):
+        nonlocal cursor
+        if cursor < len(items) - 1:
+            cursor += 1
+
+    @kb.add("enter")
+    def _confirm(event):
+        nonlocal result
+        result = cursor
+        event.app.exit()
+
+    @kb.add("escape")
+    @kb.add("c-c")
+    def _cancel(event):
+        nonlocal cancelled
+        cancelled = True
+        event.app.exit()
+
+    layout = Layout(
+        HSplit([
+            Window(content=FormattedTextControl(get_content, focusable=True)),
+        ])
+    )
+
+    app: Application = Application(
+        layout=layout,
+        key_bindings=kb,
+        style=style,
+        full_screen=True,
+        mouse_support=False,
+    )
+    app.run()
+
+    if cancelled:
+        return None
+    return result
+
+
 def interactive_select(items: list[str], header: str = "") -> list[int] | None:
     """Flat list checkbox selector (backward-compatible).
 

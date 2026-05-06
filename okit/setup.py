@@ -14,7 +14,7 @@ from typing import Callable
 from okit import config as okit_config
 from okit.config import Config
 from okit.providers import ALL_PROVIDERS
-from okit.selector import interactive_select_grouped
+from okit.selector import interactive_menu, interactive_select_grouped
 
 
 @dataclass
@@ -80,16 +80,10 @@ def run_setup() -> None:
 
     config = okit_config.ensure_initialized()
 
-    items = [(i, item.label) for i, item in enumerate(MENU_ITEMS)]
-    groups = [{"label": "okit setup", "children": [{"label": "Settings", "items": items}]}]
-
-    selected = interactive_select_grouped(
-        groups,
-        header="Choose what to configure (Space to pick, Enter to open)",
-    )
-    if not selected:
+    labels = [item.label for item in MENU_ITEMS]
+    idx = interactive_menu(labels, header="okit setup")
+    if idx is None:
         print("Setup cancelled.")
         return
 
-    for idx in selected:
-        MENU_ITEMS[idx].handler(config)
+    MENU_ITEMS[idx].handler(config)
