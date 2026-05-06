@@ -87,6 +87,14 @@ okit validate --repo user/skills-and-agents  # remote repo
 okit doctor  # verify OpenCode setup and okit prerequisites
 ```
 
+### Upgrade
+
+Upgrade okit to the latest version via pipx:
+
+```bash
+pipx upgrade okit
+```
+
 ## How it works
 
 1. **Fetches** a git repo (shallow clone)
