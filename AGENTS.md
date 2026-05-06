@@ -45,8 +45,14 @@ def installed_paths(kind, name, *, project_dir) -> list[Path]
 |---|---|---|---|---|
 | `opencode` | `OpencodeProvider` | `~/.config/opencode/` | `<name>.md` | subdirectory preserved |
 | `copilot` | `CopilotProvider` | `~/.copilot/` | `<name>.agent.md` | flattened to agents root |
+| `claudecode` | `ClaudeCodeProvider` | `~/.claude/` | `<name>.md` | subdirectory preserved |
+| `windsurf` | `WindsurfProvider` | `~/.codeium/windsurf/` | `<name>.md` (as workflow) | flattened to workflows root |
 
-Project-scoped installs use `.opencode/` (OpenCode) and `.github/` (Copilot).
+Project-scoped installs use `.opencode/` (OpenCode), `.github/` (Copilot), `.claude/` (Claude Code), and `.windsurf/` (Windsurf).
+
+**Provider notes:**
+- `claudecode` — rewrites `model: provider/model-id` → `model: model-id` in frontmatter; recurses into multi-agent subdirectories.
+- `windsurf` — no native agent concept; agents are installed as Workflows (`.windsurf/workflows/<name>.md`). Frontmatter is stripped and wrapped in a minimal Windsurf workflow envelope. Detect command: `surf`.
 
 ### Adding a provider
 

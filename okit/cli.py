@@ -1068,6 +1068,17 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         if not ok:
             all_ok = False
 
+    # Cross-provider conflict: Windsurf + Claude Code
+    if cfg.is_enabled("windsurf") and cfg.is_enabled("claudecode"):
+        print(
+            "\n  [WW] WARNING: Both 'windsurf' and 'claudecode' providers are enabled.\n"
+            "       Windsurf's 'Enable Claude Code config reading' setting causes it to\n"
+            "       auto-discover skills from ~/.claude/skills/ — duplicating everything\n"
+            "       okit installs via the claudecode provider.\n"
+            "       Disable it in Windsurf: Settings → Cascade → 'Enable Claude Code\n"
+            "       config reading' (toggle off)."
+        )
+
     if not all_ok:
         print("\nSome checks failed. Run 'okit setup' to configure providers, "
               "or 'okit install' to populate directories.")

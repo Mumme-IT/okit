@@ -1,6 +1,6 @@
 # okit
 
-CLI for managing OpenCode skills and agents from Git repositories.
+CLI for installing AI tool skills and agents from Git repositories into multiple target tools simultaneously.
 
 ## Install
 
@@ -100,15 +100,17 @@ pipx upgrade okit
 1. **Fetches** a git repo (shallow clone)
 2. **Discovers** skills (`skills/<name>/SKILL.md`) and agents (`agents/<name>.md`)
 3. **Installs** to every enabled provider's layout (see `okit setup`):
-   - **OpenCode**: `~/.config/opencode/skills/<name>/SKILL.md`, `~/.config/opencode/agents/<name>.md`
-   - **GitHub Copilot**: `~/.copilot/skills/<name>/SKILL.md`, `~/.copilot/agents/<name>.agent.md` (project: `.github/agents/`)
+   - **OpenCode**: `~/.config/opencode/skills/<name>/`, `~/.config/opencode/agents/<name>.md`
+   - **GitHub Copilot**: `~/.copilot/agents/<name>.agent.md` (project: `.github/agents/`)
+   - **Claude Code**: `~/.claude/agents/<name>.md` (project: `.claude/agents/`)
+   - **Windsurf**: `~/.codeium/windsurf/workflows/<name>.md` (agents installed as Workflows)
 4. **Tracks** source repo, commit hash, install time, and provider list in a manifest
 
 ## Providers
 
 okit can install to multiple AI tools at once. On first run it writes
 `~/.config/okit/config.json` and auto-enables every provider whose CLI is on
-PATH (`opencode`, `copilot`). Adjust the selection any time:
+PATH (`opencode`, `claude`, `copilot`, `surf`). Adjust the selection any time:
 
 ```bash
 okit setup     # interactive provider selector
@@ -117,10 +119,12 @@ okit setup     # interactive provider selector
 Per-provider quirks are encapsulated in `okit/providers/`. Adding a new target
 is one new module + one entry in `ALL_PROVIDERS`.
 
-| Provider | Agents path | Agent filename | Multi-agent dirs |
-| --- | --- | --- | --- |
-| OpenCode | `~/.config/opencode/agents/` | `<name>.md` | preserved |
-| GitHub Copilot | `~/.copilot/agents/` (or `.github/agents/`) | `<name>.agent.md` | flattened |
+| Provider | Global agents path | Agent filename | Multi-agent dirs | Notes |
+| --- | --- | --- | --- | --- |
+| OpenCode | `~/.config/opencode/agents/` | `<name>.md` | preserved | |
+| GitHub Copilot | `~/.copilot/agents/` | `<name>.agent.md` | flattened | project: `.github/agents/` |
+| Claude Code | `~/.claude/agents/` | `<name>.md` | preserved | strips `provider/` from model IDs |
+| Windsurf | `~/.codeium/windsurf/workflows/` | `<name>.md` | flattened | agents installed as Workflows; no native agent concept |
 
 ## Content repo structure
 

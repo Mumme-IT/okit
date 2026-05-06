@@ -17,12 +17,14 @@ from okit.providers.base import Provider
 from okit.providers.claudecode import ClaudeCodeProvider
 from okit.providers.copilot import CopilotProvider
 from okit.providers.opencode import OpencodeProvider
+from okit.providers.windsurf import WindsurfProvider
 
 # Single source of truth for which providers exist. Order matters for display.
 ALL_PROVIDERS: list[Provider] = [
     OpencodeProvider(),
     CopilotProvider(),
     ClaudeCodeProvider(),
+    WindsurfProvider(),
 ]
 
 PROVIDERS_BY_ID: dict[str, Provider] = {p.id: p for p in ALL_PROVIDERS}
