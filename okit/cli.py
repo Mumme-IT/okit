@@ -93,6 +93,14 @@ def _print_repo_footer() -> None:
 def _print_summary(installed: int, skipped: int, errors: int) -> None:
     parts = [f"{installed} installed", f"{skipped} up to date", f"{errors} error(s)"]
     print("\n" + ", ".join(parts) + ".")
+    cfg = okit_config.load()
+    if installed > 0 and cfg.is_enabled("windsurf") and cfg.is_enabled("claudecode"):
+        print(
+            "\n  [WW] Windsurf + Claude Code are both enabled.\n"
+            "       Windsurf's 'Enable Claude Code config reading' setting will\n"
+            "       duplicate skills from ~/.claude/skills/ — disable it in\n"
+            "       Windsurf: Settings → Cascade → 'Enable Claude Code config reading'."
+        )
 
 
 def _render_repo_results(repo_results: RepoResults) -> None:
