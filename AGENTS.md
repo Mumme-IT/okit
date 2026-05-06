@@ -47,16 +47,18 @@ def installed_paths(kind, name, *, project_dir) -> list[Path]
 | `copilot` | `CopilotProvider` | `~/.copilot/` | `<name>.agent.md` | flattened to agents root |
 | `claudecode` | `ClaudeCodeProvider` | `~/.claude/` | `<name>.md` | subdirectory preserved |
 | `windsurf` | `WindsurfProvider` | `~/.codeium/windsurf/` | `<name>.md` (as workflow) | flattened to workflows root |
+| `piagent` | `PiAgentProvider` | `~/.pi/` | `<name>.md` | subdirectory preserved |
 
-Project-scoped installs use `.opencode/` (OpenCode), `.github/` (Copilot), `.claude/` (Claude Code), and `.windsurf/` (Windsurf).
+Project-scoped installs use `.opencode/` (OpenCode), `.github/` (Copilot), `.claude/` (Claude Code), `.windsurf/` (Windsurf), and `.pi/` (pi-agent).
 
 **Provider notes:**
 - `claudecode` — rewrites `model: provider/model-id` → `model: model-id` in frontmatter; recurses into multi-agent subdirectories.
 - `windsurf` — no native agent concept; agents are installed as Workflows (`.windsurf/workflows/<name>.md`). Frontmatter is stripped and wrapped in a minimal Windsurf workflow envelope. Detect command: `surf`.
+- `piagent` — no native skill concept; skills copied verbatim to `.pi/skills/`. Agents installed as plain `.md` files. Detect command: `pi`.
 
 ### Adding a provider
 
-See `okit/skills/add-provider/SKILL.md`.
+See [docs/contributing/adding-a-provider.md](docs/contributing/adding-a-provider.md).
 
 ## Key Entry Points
 
