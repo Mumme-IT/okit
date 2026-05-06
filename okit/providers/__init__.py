@@ -14,6 +14,7 @@ To add a new provider:
 from __future__ import annotations
 
 from okit.providers.base import Provider
+from okit.providers.claudecode import ClaudeCodeProvider
 from okit.providers.copilot import CopilotProvider
 from okit.providers.opencode import OpencodeProvider
 
@@ -21,6 +22,7 @@ from okit.providers.opencode import OpencodeProvider
 ALL_PROVIDERS: list[Provider] = [
     OpencodeProvider(),
     CopilotProvider(),
+    ClaudeCodeProvider(),
 ]
 
 PROVIDERS_BY_ID: dict[str, Provider] = {p.id: p for p in ALL_PROVIDERS}

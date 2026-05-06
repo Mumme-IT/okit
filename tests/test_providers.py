@@ -150,7 +150,7 @@ class TestMultiProviderInstall:
 
         records = load_manifest()
         rec = records[manifest_key("agent", "reviewer")]
-        assert sorted(rec.providers) == ["copilot", "opencode"]
+        assert sorted(rec.providers) == ["claudecode", "copilot", "opencode"]
 
     def test_skill_installs_to_all_providers(self, all_providers_enabled, isolated_env):
         artifact = _make_skill(isolated_env)
