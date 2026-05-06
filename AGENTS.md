@@ -7,7 +7,7 @@ CLI for installing AI tool skills and agents from Git repositories into multiple
 - Language: Python 3.10+, stdlib-only except `prompt_toolkit` for TUI
 - Pattern: thin CLI shell (`cli.py`) → core logic (`core.py`) → provider layer (`providers/`)
 - Config: `~/.config/okit/config.json` — which providers are enabled
-- Manifest: `~/.config/opencode/okit-manifest.json` — what was installed, from where, into which providers
+- Manifest: `~/.config/okit/manifest.json` — what was installed, from where, into which providers
 
 ## Modules
 
@@ -63,7 +63,9 @@ See `okit/skills/add-provider/SKILL.md`.
 
 ## Developer Notes
 
-- Test: `python -m pytest tests/`
-- Install dev: `pip install -e .[dev]`
+- Run: `mise run okit -- <args>` (auto-installs editable package on first run)
+- Test: `mise run test`
+- Install dev: `mise run okit:install` (or `pip install -e .[dev]`)
+- Version bump: `mise run version:update <new_version>` (updates `pyproject.toml` + `okit/__init__.py`)
 - Env overrides: `OKIT_CONFIG`, `OKIT_MANIFEST`, `XDG_CONFIG_HOME`
 - New provider → new file in `okit/providers/` + one line in `ALL_PROVIDERS` (`okit/providers/__init__.py`)

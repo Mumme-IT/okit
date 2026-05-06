@@ -72,7 +72,9 @@ def manifest_path() -> Path:
     env_path = os.environ.get("OKIT_MANIFEST", "")
     if env_path:
         return Path(env_path)
-    return opencode_global_dir() / "okit-manifest.json"
+    from okit.config import config_dir
+
+    return config_dir() / "manifest.json"
 
 
 # --- Manifest (source tracking) ---
