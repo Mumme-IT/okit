@@ -7,12 +7,16 @@ Windsurf (``~/.codeium/windsurf/``) supports three relevant artifact types:
     the native Windsurf skill layout (a directory with ``SKILL.md`` + resources).
 
   - **Agents** — Windsurf has no native agent concept. Agents are installed as
-    **Workflows**: thin ``.windsurf/workflows/<name>.md`` wrapper files that
-    contain a description and the full agent content inline. Cascade invokes
-    workflows via ``/slash-command`` and reads them as instructions.
+    **Workflows**: ``.md`` files that Cascade invokes via ``/slash-command``.
+    Global path: ``~/.codeium/windsurf/windsurf/workflows/<name>.md``
+    Project path: ``.windsurf/workflows/<name>.md``
 
   - **Multi-agent groups** — flattened: each member ``.md`` becomes its own
     workflow file directly under the workflows root (no subdirectory recursion).
+
+Filename normalisation: agent names ending in ``.agent`` (e.g. ``ama.agent``)
+are stripped to their bare name (``ama``) so the Windsurf slash command is
+``/ama``, not ``/ama.agent``.
 
 Global root: ``~/.codeium/windsurf/``
 Project root: ``<project>/.windsurf/``
@@ -89,7 +93,14 @@ class WindsurfProvider(Provider):
     def _workflows_dir(self, project_dir: Path | None) -> Path:
         if project_dir is not None:
             return project_dir / ".windsurf" / "workflows"
-        return self._global_root() / "workflows"
+        return self._global_root() / "windsurf" / "workflows"
+
+    @staticmethod
+    def _workflow_name(name: str) -> str:
+        """Strip a trailing ``.agent`` suffix so ``ama.agent`` → ``ama``."""
+        if name.endswith(".agent"):
+            return name[: -len(".agent")]
+        return name
 
     # --- Install ---
 
@@ -103,8 +114,9 @@ class WindsurfProvider(Provider):
     def install_agent(self, artifact: "Artifact", *, project_dir: Path | None) -> list[Path]:
         # Windsurf has no native agent concept; install as a workflow instead.
         dest_dir = self._workflows_dir(project_dir)
-        dest = dest_dir / f"{artifact.name}.md"
-        _install_workflow_file(artifact.path, dest, artifact.name)
+        wf_name = self._workflow_name(artifact.name)
+        dest = dest_dir / f"{wf_name}.md"
+        _install_workflow_file(artifact.path, dest, wf_name)
         return [dest]
 
     def install_multi_agent(self, artifact: "Artifact", *, project_dir: Path | None) -> list[Path]:
@@ -114,8 +126,9 @@ class WindsurfProvider(Provider):
         written: list[Path] = []
         for member in sorted(artifact.path.iterdir()):
             if member.is_file() and member.suffix == ".md":
-                dest = dest_dir / f"{member.stem}.md"
-                _install_workflow_file(member, dest, member.stem)
+                wf_name = self._workflow_name(member.stem)
+                dest = dest_dir / f"{wf_name}.md"
+                _install_workflow_file(member, dest, wf_name)
                 written.append(dest)
         return written
 
@@ -135,7 +148,7 @@ class WindsurfProvider(Provider):
             # filenames without scanning, so return an empty list.
             # remove() handles missing paths gracefully.
             return []
-        return [self._workflows_dir(project_dir) / f"{name}.md"]
+        return [self._workflows_dir(project_dir) / f"{self._workflow_name(name)}.md"]
 
 
 def _copy_tree(src: Path, dst: Path) -> None:
