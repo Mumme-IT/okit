@@ -42,6 +42,7 @@ _STATUS_ICONS: dict[str, str] = {
     "err": "✗",
     "miss": "✗",
     "dry": "○",
+    "rm": "✗",
 }
 _KIND_LABELS: dict[str, str] = {
     "skill": "Skills",
@@ -90,8 +91,10 @@ def _print_repo_footer() -> None:
     print(f"└{'─' * (_BOX_WIDTH)}┘")
 
 
-def _print_summary(installed: int, skipped: int, errors: int) -> None:
+def _print_summary(installed: int, skipped: int, errors: int, *, removed: int = 0) -> None:
     parts = [f"{installed} installed", f"{skipped} up to date", f"{errors} error(s)"]
+    if removed:
+        parts.append(f"{removed} removed")
     print("\n" + ", ".join(parts) + ".")
     cfg = okit_config.load()
     if installed > 0 and cfg.is_enabled("windsurf") and cfg.is_enabled("claudecode"):
@@ -651,7 +654,13 @@ def cmd_update(args: argparse.Namespace) -> None:
         by_repo.setdefault(rec.repo, []).append(rec)
 
     # First pass: clone repos, discover artifacts, collect updatable items
-    updateable, repo_cache = _collect_updateable(by_repo)
+    updateable, orphaned, repo_cache = _collect_updateable(by_repo)
+
+    if orphaned:
+        print("Warning: the following artifact(s) no longer exist on the remote:")
+        for rec in orphaned:
+            print(f"  ✗ {rec.name} ({rec.kind}) from {rec.repo}")
+        print("  Run 'okit sync' to remove them locally.\n")
 
     if not updateable:
         print("All up to date.")
@@ -680,13 +689,15 @@ _UpdateableItem = tuple["InstallRecord", object, "Path", str]  # (record, artifa
 
 def _collect_updateable(
     by_repo: dict[str, list],
-) -> tuple[list[_UpdateableItem], dict[str, tuple["Path", bool]]]:
-    """Clone repos and collect items that have content changes.
+) -> tuple[list[_UpdateableItem], list["InstallRecord"], dict[str, tuple["Path", bool]]]:
+    """Clone repos and collect items that have content changes or are missing.
 
-    Returns (updateable_items, repo_cache) where repo_cache maps repo_url → (path, is_temp).
+    Returns (updateable_items, orphaned_records, repo_cache).
+    orphaned_records are manifest records whose artifact no longer exists on the remote.
     Caller is responsible for cleaning up repo_cache.
     """
     updateable: list[_UpdateableItem] = []
+    orphaned: list["InstallRecord"] = []
     repo_cache: dict[str, tuple[Path, bool]] = {}
 
     for repo_url, recs in by_repo.items():
@@ -696,10 +707,12 @@ def _collect_updateable(
 
         for rec in recs:
             artifact = available.get(rec.name)
-            if artifact is not None and check_update_available(rec, artifact.path):
+            if artifact is None:
+                orphaned.append(rec)
+            elif check_update_available(rec, artifact.path):
                 updateable.append((rec, artifact, repo_path, repo_url))
 
-    return updateable, repo_cache
+    return updateable, orphaned, repo_cache
 
 
 def _build_update_grouped_selector_data(updateable: list[_UpdateableItem]) -> list[dict]:
@@ -799,6 +812,7 @@ def _cleanup_repo_cache(repo_cache: dict[str, tuple["Path", bool]]) -> None:
 _SYNC_UPDATED = "updated"
 _SYNC_NEW = "new"
 _SYNC_UP_TO_DATE = "up-to-date"
+_SYNC_REMOVED = "removed"
 
 _SyncItem = tuple[object, str, str, str]  # (artifact, repo_url, status, kind)
 
@@ -820,8 +834,10 @@ def _collect_sync_items(
     """Clone each repo, discover all artifacts, and categorize each one.
 
     Returns (sync_items, repo_cache).  Caller cleans up repo_cache.
-    Items are tuples of (artifact, repo_url, status, kind).
+    Items are tuples of (artifact_or_record, repo_url, status, kind).
     Up-to-date items are included so callers can report totals.
+    Manifest records with no matching artifact on the remote are included
+    with status _SYNC_REMOVED so the apply phase can remove them locally.
     """
     sync_items: list[_SyncItem] = []
     repo_cache: dict[str, tuple[Path, bool]] = {}
@@ -829,9 +845,17 @@ def _collect_sync_items(
     for repo_url in by_repo:
         repo_path, is_temp = _resolve_source(repo_url, None)
         repo_cache[repo_url] = (repo_path, is_temp)
-        for artifact in discover_all(repo_path):
+        available_by_name: dict[str, object] = {a.name: a for a in discover_all(repo_path)}
+
+        # Categorize artifacts that still exist on remote
+        for artifact in available_by_name.values():
             status = _categorize_artifact(artifact, manifest_records, repo_url)
             sync_items.append((artifact, repo_url, status, artifact.kind))
+
+        # Detect orphans: manifest records for this repo whose artifact is gone
+        for rec in manifest_records.values():
+            if rec.repo == repo_url and rec.name not in available_by_name:
+                sync_items.append((rec, repo_url, _SYNC_REMOVED, rec.kind))
 
     return sync_items, repo_cache
 
@@ -841,7 +865,7 @@ def _build_sync_selector_data(
 ) -> tuple[list[dict], set[int]]:
     """Build grouped selector data with status labels; return (groups, preselected_indices).
 
-    Updated items are pre-checked; new items are unchecked; up-to-date items are excluded.
+    Updated and removed items are pre-checked; new items are unchecked; up-to-date items are excluded.
     """
     selectable = [
         (idx, item)
@@ -855,7 +879,7 @@ def _build_sync_selector_data(
     for selector_idx, (original_idx, (artifact, repo_url, status, kind)) in enumerate(selectable):
         label = f"{artifact.name} ({status})"
         by_repo.setdefault(repo_url, {}).setdefault(kind, []).append((selector_idx, label))
-        if status == _SYNC_UPDATED:
+        if status in (_SYNC_UPDATED, _SYNC_REMOVED):
             preselected.add(selector_idx)
 
     groups = []
@@ -900,12 +924,12 @@ def _apply_sync_installs(
     chosen: list[_SyncItem],
     repo_cache: dict[str, tuple["Path", bool]],
     args: argparse.Namespace,
-) -> tuple[int, int, int]:
-    """Install the chosen sync items and render results per-repo.
+) -> tuple[int, int, int, int]:
+    """Install or remove the chosen sync items and render results per-repo.
 
-    Returns (installed, skipped, errors) counts.
+    Returns (installed, skipped, removed, errors) counts.
     """
-    installed = skipped = errors = 0
+    installed = skipped = removed = errors = 0
 
     by_repo: dict[str, list[_SyncItem]] = {}
     for item in chosen:
@@ -917,27 +941,44 @@ def _apply_sync_installs(
         repo_result = RepoResults(repo=repo_url)
 
         for artifact, _, status, kind in items:
-            if args.dry_run:
+            if status == _SYNC_REMOVED:
+                if args.dry_run:
+                    repo_result.results.append(
+                        ArtifactResult(name=artifact.name, status="dry", detail="removed on remote", kind=kind)
+                    )
+                    removed += 1
+                    continue
+                ok, msg = remove_artifact(artifact.kind, artifact.name)
+                result_status = "rm" if ok else "err"
                 repo_result.results.append(
-                    ArtifactResult(name=artifact.name, status="dry", detail=status, kind=kind)
+                    ArtifactResult(name=artifact.name, status=result_status, detail="removed" if ok else msg, kind=kind)
                 )
-                installed += 1
-                continue
-
-            new_commit = get_repo_commit(repo_path)
-            ok, msg = install_artifact(artifact, repo_url=repo_url, commit=new_commit, force=args.force)
-            result_status = "ok" if ok else "skip"
-            repo_result.results.append(
-                ArtifactResult(name=artifact.name, status=result_status, detail=status if ok else msg, kind=kind)
-            )
-            if ok:
-                installed += 1
+                if ok:
+                    removed += 1
+                else:
+                    errors += 1
             else:
-                errors += 1
+                if args.dry_run:
+                    repo_result.results.append(
+                        ArtifactResult(name=artifact.name, status="dry", detail=status, kind=kind)
+                    )
+                    installed += 1
+                    continue
+
+                new_commit = get_repo_commit(repo_path)
+                ok, msg = install_artifact(artifact, repo_url=repo_url, commit=new_commit, force=args.force)
+                result_status = "ok" if ok else "skip"
+                repo_result.results.append(
+                    ArtifactResult(name=artifact.name, status=result_status, detail=status if ok else msg, kind=kind)
+                )
+                if ok:
+                    installed += 1
+                else:
+                    errors += 1
 
         _render_repo_results(repo_result)
 
-    return installed, skipped, errors
+    return installed, skipped, removed, errors
 
 
 def cmd_sync(args: argparse.Namespace) -> None:
@@ -976,10 +1017,10 @@ def cmd_sync(args: argparse.Namespace) -> None:
         _cleanup_repo_cache(repo_cache)
         return
 
-    installed, skipped, errors = _apply_sync_installs(chosen, repo_cache, args)
+    installed, skipped, removed, errors = _apply_sync_installs(chosen, repo_cache, args)
     _cleanup_repo_cache(repo_cache)
 
-    _print_summary(installed, skipped, errors)
+    _print_summary(installed, skipped, errors, removed=removed)
     if errors:
         sys.exit(1)
 
