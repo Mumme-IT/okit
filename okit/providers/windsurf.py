@@ -80,6 +80,19 @@ class WindsurfProvider(Provider):
     display_name = "Windsurf"
     detect_command = "surf"
 
+    def is_available(self) -> bool:
+        """Detect Windsurf via CLI binary *or* config directory.
+
+        Brew installs Windsurf without the ``surf`` CLI, so we fall back to
+        checking whether ``~/.codeium/windsurf/`` exists.
+        """
+        import shutil as _shutil
+
+        return (
+            _shutil.which(self.detect_command) is not None
+            or self._global_root().is_dir()
+        )
+
     # --- Paths ---
 
     def _global_root(self) -> Path:

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "okit"
-version = "0.5.3"
+version = "0.5.4"
 description = "CLI for managing OpenCode skills and agents from Git repositories"
 readme = "README.md"
 license = "MIT"
