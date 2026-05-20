@@ -77,11 +77,15 @@ def manifest_path() -> Path:
     return config_dir() / "manifest.json"
 
 
+def project_manifest_path(project_dir: Path) -> Path:
+    return project_dir / ".okit-manifest.json"
+
+
 # --- Manifest (source tracking) ---
 
 
-def load_manifest() -> dict[str, InstallRecord]:
-    path = manifest_path()
+def load_manifest(project_dir: Path | None = None) -> dict[str, InstallRecord]:
+    path = project_manifest_path(project_dir) if project_dir else manifest_path()
     if not path.exists():
         return {}
     raw = json.loads(path.read_text())
@@ -102,8 +106,8 @@ def _record_from_dict(val: dict) -> InstallRecord:
     )
 
 
-def save_manifest(records: dict[str, InstallRecord]) -> None:
-    path = manifest_path()
+def save_manifest(records: dict[str, InstallRecord], project_dir: Path | None = None) -> None:
+    path = project_manifest_path(project_dir) if project_dir else manifest_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     artifacts = {
         key: {
@@ -432,23 +436,22 @@ def install_artifact(
     if not installed_provider_ids:
         return False, skipped_messages[0] if skipped_messages else "No providers installed"
 
-    if not project:
-        records = load_manifest()
-        key = manifest_key(artifact.kind, artifact.name)
-        existing = records.get(key)
-        prior_providers = list(existing.providers) if existing else []
-        merged_providers = sorted(set(prior_providers) | set(installed_provider_ids))
-        records[key] = InstallRecord(
-            kind=artifact.kind,
-            name=artifact.name,
-            repo=repo_url,
-            commit=commit,
-            installed_at=datetime.now(timezone.utc).isoformat(),
-            description=artifact.description[:200],
-            content_hash=compute_content_hash(artifact.path, artifact.kind),
-            providers=merged_providers,
-        )
-        save_manifest(records)
+    records = load_manifest(project_dir) if project else load_manifest()
+    key = manifest_key(artifact.kind, artifact.name)
+    existing = records.get(key)
+    prior_providers = list(existing.providers) if existing else []
+    merged_providers = sorted(set(prior_providers) | set(installed_provider_ids))
+    records[key] = InstallRecord(
+        kind=artifact.kind,
+        name=artifact.name,
+        repo=repo_url,
+        commit=commit,
+        installed_at=datetime.now(timezone.utc).isoformat(),
+        description=artifact.description[:200],
+        content_hash=compute_content_hash(artifact.path, artifact.kind),
+        providers=merged_providers,
+    )
+    save_manifest(records, project_dir) if project else save_manifest(records)
 
     detail = f"{artifact.kind}: {artifact.name} → {', '.join(installed_provider_ids)}"
     return True, f"Installed {detail}"
@@ -487,8 +490,9 @@ def remove_artifact(
 
     # Decide which providers to ask.
     record: InstallRecord | None = None
+    manifest_project_dir = project_dir if project else None
+    records = load_manifest(manifest_project_dir)
     if not project:
-        records = load_manifest()
         record = records.get(manifest_key(kind, name))
 
     if providers is not None:
@@ -510,10 +514,8 @@ def remove_artifact(
     if not removed_any:
         return False, f"Not found: {kind} '{name}'"
 
-    if not project:
-        records = load_manifest()
-        records.pop(manifest_key(kind, name), None)
-        save_manifest(records)
+    records.pop(manifest_key(kind, name), None)
+    save_manifest(records, manifest_project_dir)
 
     return True, f"Removed {kind}: {name} ({removed_count} file(s) deleted)"
 

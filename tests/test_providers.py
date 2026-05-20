@@ -23,6 +23,7 @@ from okit.core import (
     install_artifact,
     load_manifest,
     manifest_key,
+    project_manifest_path,
     remove_artifact,
     save_manifest,
 )
@@ -352,3 +353,68 @@ class TestRegistry:
     def test_get_provider_unknown_raises(self):
         with pytest.raises(KeyError):
             get_provider("nope")
+
+
+# ---------------------------------------------------------------------------
+# Project-level manifest
+# ---------------------------------------------------------------------------
+
+
+class TestProjectManifest:
+    def test_install_writes_project_manifest(self, all_providers_enabled, isolated_env):
+        project_dir = isolated_env / "myproj"
+        project_dir.mkdir()
+        artifact = _make_skill(isolated_env)
+        ok, msg = install_artifact(
+            artifact, project=True, project_dir=project_dir, repo_url="r", commit="c"
+        )
+        assert ok, msg
+
+        manifest_file = project_manifest_path(project_dir)
+        assert manifest_file.exists()
+        records = load_manifest(project_dir)
+        assert manifest_key("skill", "tester") in records
+
+    def test_remove_updates_project_manifest(self, all_providers_enabled, isolated_env):
+        project_dir = isolated_env / "myproj"
+        project_dir.mkdir()
+        artifact = _make_skill(isolated_env)
+        install_artifact(
+            artifact, project=True, project_dir=project_dir, repo_url="r", commit="c"
+        )
+
+        ok, _ = remove_artifact("skill", "tester", project=True, project_dir=project_dir)
+        assert ok
+        records = load_manifest(project_dir)
+        assert manifest_key("skill", "tester") not in records
+
+    def test_project_manifest_does_not_pollute_global(self, all_providers_enabled, isolated_env):
+        project_dir = isolated_env / "myproj"
+        project_dir.mkdir()
+        artifact = _make_skill(isolated_env)
+        install_artifact(
+            artifact, project=True, project_dir=project_dir, repo_url="r", commit="c"
+        )
+
+        global_records = load_manifest()
+        assert manifest_key("skill", "tester") not in global_records
+
+    def test_project_manifest_path_location(self, isolated_env):
+        project_dir = isolated_env / "proj"
+        assert project_manifest_path(project_dir) == project_dir / ".okit-manifest.json"
+
+    def test_install_and_remove_project_files_exist(self, all_providers_enabled, isolated_env):
+        project_dir = isolated_env / "myproj"
+        project_dir.mkdir()
+        artifact = _make_skill(isolated_env)
+        ok, msg = install_artifact(
+            artifact, project=True, project_dir=project_dir, repo_url="r", commit="c"
+        )
+        assert ok, msg
+
+        skill_dir = project_dir / ".opencode" / "skills" / "tester"
+        assert (skill_dir / "SKILL.md").exists()
+
+        ok, _ = remove_artifact("skill", "tester", project=True, project_dir=project_dir)
+        assert ok
+        assert not skill_dir.exists()

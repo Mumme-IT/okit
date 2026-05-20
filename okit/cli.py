@@ -23,6 +23,7 @@ from okit.core import (
     install_artifact,
     load_manifest,
     manifest_key,
+    project_manifest_path,
     remove_artifact,
     validate_agent,
     validate_skill,
@@ -164,6 +165,7 @@ def main() -> None:
     p_installed = sub.add_parser("installed", help="Show installed skills/agents")
     p_installed.add_argument("--detail", action="store_true", help="Show source tracking info")
     p_installed.add_argument("--kind", choices=["skill", "agent", "all"], default="all")
+    p_installed.add_argument("--project", action="store_true", help="Show project-level installs")
 
     # --- validate ---
     p_validate = sub.add_parser("validate", help="Validate skills/agents in a repo or directory")
@@ -366,7 +368,8 @@ def _cmd_install_from_manifest(args: argparse.Namespace) -> None:
 
 
 def _cmd_reinstall_from_active_manifest(args: argparse.Namespace) -> None:
-    records = load_manifest()
+    project_dir = Path.cwd() if args.project else None
+    records = load_manifest(project_dir)
     if not records:
         print("Nothing tracked in manifest. Install from a repo first.")
         return
@@ -375,7 +378,6 @@ def _cmd_reinstall_from_active_manifest(args: argparse.Namespace) -> None:
     for rec in records.values():
         by_repo.setdefault(rec.repo, []).append(rec)
 
-    project_dir = Path.cwd() if args.project else None
     installed = skipped = errors = 0
 
     for repo_url, recs in by_repo.items():
@@ -459,13 +461,13 @@ def _resolve_remove_items_interactive(records: dict) -> list[tuple[str, str]] | 
     return [(all_records[i].kind, all_records[i].name) for i in selected_indices]
 
 
-def _collect_remove_items(args: argparse.Namespace) -> list[tuple[str, str]] | None:
+def _collect_remove_items(args: argparse.Namespace, project_dir: Path | None = None) -> list[tuple[str, str]] | None:
     """Resolve which artifacts to remove; return (kind, name) pairs or None on cancel.
 
     Returns None if the user cancels the interactive selector.
     """
     if args.remove_all:
-        records = load_manifest()
+        records = load_manifest(project_dir)
         return [(rec.kind, rec.name) for rec in records.values()]
 
     if args.skills or args.agents:
@@ -483,7 +485,7 @@ def _collect_remove_items(args: argparse.Namespace) -> list[tuple[str, str]] | N
         print("Error: specify artifacts to remove or use --all")
         sys.exit(1)
 
-    records = load_manifest()
+    records = load_manifest(project_dir)
     if not records:
         print("Nothing tracked in manifest.")
         return []
@@ -547,7 +549,7 @@ def _apply_removals(
 def cmd_remove(args: argparse.Namespace) -> None:
     project_dir = Path.cwd() if args.project else None
 
-    items = _collect_remove_items(args)
+    items = _collect_remove_items(args, project_dir)
     if items is None:
         print("Cancelled.")
         return
@@ -555,7 +557,7 @@ def cmd_remove(args: argparse.Namespace) -> None:
         print("Nothing to remove.")
         return
 
-    records = load_manifest()
+    records = load_manifest(project_dir)
 
     if not args.force and not _confirm_removal(items, records):
         print("Aborted.")
@@ -605,7 +607,8 @@ def _build_installed_repo_results(repo: str, recs: list["InstallRecord"]) -> Rep
 
 
 def cmd_installed(args: argparse.Namespace) -> None:
-    records = load_manifest()
+    project_dir = Path.cwd() if args.project else None
+    records = load_manifest(project_dir)
     if not records:
         print("No artifacts installed via okit.")
         return
