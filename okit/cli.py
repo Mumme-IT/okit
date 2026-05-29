@@ -177,6 +177,7 @@ def main() -> None:
     p_update = sub.add_parser("update", help="Re-install artifacts that have changed upstream")
     p_update.add_argument("--skills", help="Comma-separated skill names to update (default: all tracked)")
     p_update.add_argument("--agents", help="Comma-separated agent names to update (default: all tracked)")
+    p_update.add_argument("--all", action="store_true", dest="update_all", help="Update all changed artifacts without prompting")
     p_update.add_argument("--dry-run", action="store_true", help="Preview without installing")
 
     # --- sync ---
@@ -670,7 +671,7 @@ def cmd_update(args: argparse.Namespace) -> None:
         _cleanup_repo_cache(repo_cache)
         return
 
-    has_filter_flags = bool(args.skills or args.agents)
+    has_filter_flags = bool(args.skills or args.agents or args.update_all)
     updateable = _apply_update_interactive_selection(updateable, has_filter_flags)
     if updateable is None:
         print("Cancelled.")
