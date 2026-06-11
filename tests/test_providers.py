@@ -20,6 +20,8 @@ import pytest
 from okit import config as okit_config
 from okit.core import (
     Artifact,
+    discover_agents,
+    discover_skills,
     install_artifact,
     load_manifest,
     manifest_key,
@@ -79,6 +81,64 @@ def _make_multi_agent(tmp_path: Path, name: str = "pipeline") -> Artifact:
     (src / "planner.md").write_text("---\ndescription: planner\n---\nplan\n")
     (src / "executor.md").write_text("---\ndescription: executor\n---\nrun\n")
     return Artifact(kind="multi-agent", name=name, description="multi", path=src)
+
+
+# ---------------------------------------------------------------------------
+# Discovery — symlinks are ignored
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoverySymlinks:
+    def test_skills_ignore_symlinked_directories(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        real_skill = skills_dir / "real"
+        linked_skill = tmp_path / "linked"
+        real_skill.mkdir(parents=True)
+        linked_skill.mkdir()
+        (real_skill / "SKILL.md").write_text("---\nname: real\ndescription: real\n---\nbody\n")
+        (linked_skill / "SKILL.md").write_text("---\nname: linked\ndescription: linked\n---\nbody\n")
+        (skills_dir / "linked").symlink_to(linked_skill, target_is_directory=True)
+
+        artifacts = discover_skills(tmp_path)
+
+        assert [artifact.name for artifact in artifacts] == ["real"]
+
+    def test_agents_ignore_symlinked_files(self, tmp_path):
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        real_agent = agents_dir / "real.md"
+        real_agent.write_text("---\ndescription: real\n---\nbody\n")
+        (agents_dir / "linked.md").symlink_to(real_agent)
+
+        artifacts = discover_agents(tmp_path)
+
+        assert [artifact.name for artifact in artifacts] == ["real"]
+
+    def test_agents_ignore_symlinked_multi_agent_directories(self, tmp_path):
+        agents_dir = tmp_path / "agents"
+        real_group = agents_dir / "real-group"
+        linked_group = tmp_path / "linked-group"
+        real_group.mkdir(parents=True)
+        linked_group.mkdir()
+        (real_group / "worker.md").write_text("---\ndescription: real\n---\nbody\n")
+        (linked_group / "worker.md").write_text("---\ndescription: linked\n---\nbody\n")
+        (agents_dir / "linked-group").symlink_to(linked_group, target_is_directory=True)
+
+        artifacts = discover_agents(tmp_path)
+
+        assert [artifact.name for artifact in artifacts] == ["real-group"]
+
+    def test_agents_ignore_symlinked_files_inside_multi_agent_directories(self, tmp_path):
+        agents_dir = tmp_path / "agents"
+        symlink_only_group = agents_dir / "symlink-only"
+        target = tmp_path / "worker.md"
+        symlink_only_group.mkdir(parents=True)
+        target.write_text("---\ndescription: linked\n---\nbody\n")
+        (symlink_only_group / "worker.md").symlink_to(target)
+
+        artifacts = discover_agents(tmp_path)
+
+        assert artifacts == []
 
 
 # ---------------------------------------------------------------------------

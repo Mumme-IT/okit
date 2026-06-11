@@ -220,15 +220,35 @@ def _parse_yaml_simple(lines: list[str]) -> dict:
 # --- Discovery ---
 
 
+def _is_real_dir(path: Path) -> bool:
+    return path.is_dir() and not path.is_symlink()
+
+
+def _is_real_file(path: Path) -> bool:
+    return path.is_file() and not path.is_symlink()
+
+
+def _iter_real_skill_files(root: Path) -> list[Path]:
+    skill_files = []
+    for entry in sorted(root.iterdir()):
+        if entry.is_symlink():
+            continue
+        if entry.is_dir():
+            skill_files.extend(_iter_real_skill_files(entry))
+        elif entry.is_file() and entry.name == SKILL_FILENAME:
+            skill_files.append(entry)
+    return skill_files
+
+
 def discover_skills(root: Path) -> list[Artifact]:
     """Find all valid skills in a directory tree."""
-    skills_dir = root / "skills" if (root / "skills").is_dir() else root
+    skills_dir = root / "skills" if _is_real_dir(root / "skills") else root
     artifacts = []
 
-    if not skills_dir.is_dir():
+    if not _is_real_dir(skills_dir):
         return artifacts
 
-    for skill_file in sorted(skills_dir.rglob(SKILL_FILENAME)):
+    for skill_file in _iter_real_skill_files(skills_dir):
         entry = skill_file.parent
         text = skill_file.read_text(encoding="utf-8")
         meta, _ = parse_frontmatter(text)
@@ -245,10 +265,10 @@ def discover_skills(root: Path) -> list[Artifact]:
 def _extract_multi_agent_description(dir_path: Path) -> str:
     """Extract description from README.md or first .md file's frontmatter in a directory."""
     candidates = [dir_path / "README.md"] + sorted(
-        p for p in dir_path.iterdir() if p.is_file() and p.suffix == ".md" and p.name != "README.md"
+        p for p in dir_path.iterdir() if _is_real_file(p) and p.suffix == ".md" and p.name != "README.md"
     )
     for md_file in candidates:
-        if not md_file.exists():
+        if not _is_real_file(md_file):
             continue
         meta, _ = parse_frontmatter(md_file.read_text(encoding="utf-8"))
         desc = meta.get("description", "")
@@ -271,7 +291,7 @@ def _discover_agent_file(entry: Path) -> Artifact:
 
 def _discover_multi_agent_dir(entry: Path) -> Artifact | None:
     """Build an Artifact for a subdirectory containing at least one .md file."""
-    md_files = [p for p in entry.iterdir() if p.is_file() and p.suffix == ".md"]
+    md_files = [p for p in entry.iterdir() if _is_real_file(p) and p.suffix == ".md"]
     if not md_files:
         return None
     desc = _extract_multi_agent_description(entry)
@@ -280,16 +300,16 @@ def _discover_multi_agent_dir(entry: Path) -> Artifact | None:
 
 def discover_agents(root: Path) -> list[Artifact]:
     """Find all valid agent artifacts (standalone .md files and multi-agent subdirs)."""
-    agents_dir = root / "agents" if (root / "agents").is_dir() else root
+    agents_dir = root / "agents" if _is_real_dir(root / "agents") else root
     artifacts = []
 
-    if not agents_dir.is_dir():
+    if not _is_real_dir(agents_dir):
         return artifacts
 
     for entry in sorted(agents_dir.iterdir()):
-        if entry.is_file() and entry.name.endswith(".md"):
+        if _is_real_file(entry) and entry.name.endswith(".md"):
             artifacts.append(_discover_agent_file(entry))
-        elif entry.is_dir():
+        elif _is_real_dir(entry):
             artifact = _discover_multi_agent_dir(entry)
             if artifact:
                 artifacts.append(artifact)
