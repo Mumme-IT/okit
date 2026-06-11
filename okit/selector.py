@@ -79,6 +79,42 @@ def _build_visible(nodes: list[_Node], collapsed: set[int]) -> list[int]:
     return visible
 
 
+def _fuzzy_matches(query: str, label: str) -> bool:
+    """Return True when all query chars appear in label order, case-insensitively."""
+    needle = query.casefold()
+    haystack = label.casefold()
+    next_pos = 0
+    for char in needle:
+        found_at = haystack.find(char, next_pos)
+        if found_at == -1:
+            return False
+        next_pos = found_at + 1
+    return True
+
+
+def _ancestors_for(nodes: list[_Node], node_pos: int) -> list[int]:
+    """Return visible ancestor positions for a flat tree node."""
+    ancestors: list[int] = []
+    for pos in range(node_pos - 1, -1, -1):
+        children_range = nodes[pos].children_range
+        if children_range is None:
+            continue
+        if children_range[0] <= node_pos < children_range[1]:
+            ancestors.append(pos)
+    return list(reversed(ancestors))
+
+
+def _build_search_visible(nodes: list[_Node], query: str) -> list[int]:
+    """Return matching leaves plus their ancestors for search mode."""
+    included: set[int] = set()
+    for pos, node in enumerate(nodes):
+        if node.index is None or not _fuzzy_matches(query, node.label):
+            continue
+        included.update(_ancestors_for(nodes, pos))
+        included.add(pos)
+    return [pos for pos in range(len(nodes)) if pos in included]
+
+
 # ---------------------------------------------------------------------------
 # Render helpers
 # ---------------------------------------------------------------------------
@@ -231,14 +267,13 @@ def interactive_select_grouped(
     result: list[int] | None = []
     cancelled = False
 
-    # Header lines occupy 3 rows (title + hint + blank line)
-    HEADER_ROWS = 3
-
     hint = (
         "↑↓ navigate  ◀▶ collapse/expand  Space toggle  "
-        "Enter confirm  Esc cancel  a select-all  n deselect-all"
+        "Enter confirm  / search  Esc cancel  a select-all  n deselect-all"
     )
     title_text = header or "Select artifacts"
+    search_query = ""
+    search_active = False
 
     style = Style.from_dict({
         "title": "bold",
@@ -247,15 +282,34 @@ def interactive_select_grouped(
     })
 
     def _visible() -> list[int]:
+        if search_query:
+            return _build_search_visible(nodes, search_query)
         return _build_visible(nodes, collapsed)
+
+    def _header_rows() -> int:
+        return 4 if search_active or search_query else 3
+
+    def _set_cursor_to_first_visible() -> None:
+        nonlocal cursor, scroll_offset
+        visible = _visible()
+        if visible and cursor not in visible:
+            cursor = visible[0]
+            scroll_offset = 0
+
+    def _append_search_text(text: str) -> None:
+        nonlocal search_query
+        search_query += text
+        _set_cursor_to_first_visible()
 
     def get_content():
         nonlocal scroll_offset
         visible = _visible()
+        _set_cursor_to_first_visible()
+        visible = _visible()
         cursor_vis_pos = visible.index(cursor) if cursor in visible else 0
 
         app_height = app.output.get_size().rows
-        viewport_height = max(1, app_height - HEADER_ROWS)
+        viewport_height = max(1, app_height - _header_rows())
 
         scroll_offset = _clamp_scroll(scroll_offset, cursor_vis_pos, viewport_height, len(visible))
 
@@ -263,7 +317,15 @@ def interactive_select_grouped(
 
         result_fragments = []
         result_fragments.append(("class:title", f"{title_text}\n"))
-        result_fragments.append(("class:hint", f"{hint}\n\n"))
+        result_fragments.append(("class:hint", f"{hint}\n"))
+        if search_active or search_query:
+            prompt = "/" if search_active else " "
+            result_fragments.append(("class:search", f"Search: {prompt}{search_query}\n"))
+        result_fragments.append(("", "\n"))
+
+        if not visible:
+            result_fragments.append(("", "  No matches\n"))
+            return result_fragments
 
         for vis_idx, line in enumerate(lines):
             abs_vis_pos = scroll_offset + vis_idx
@@ -292,27 +354,69 @@ def interactive_select_grouped(
 
     @kb.add("right")
     def _expand(event):
+        if search_query:
+            return
         node = nodes[cursor]
         if node.children_range is not None and cursor in collapsed:
             collapsed.discard(cursor)
 
     @kb.add("left")
     def _collapse(event):
+        if search_query:
+            return
         node = nodes[cursor]
         if node.children_range is not None and cursor not in collapsed:
             collapsed.add(cursor)
 
     @kb.add("space")
     def _toggle(event):
+        if search_active:
+            _append_search_text(" ")
+            return
+        visible = _visible()
+        if not visible:
+            return
         _toggle_node(nodes, cursor, selected)
 
     @kb.add("a")
     def _all(event):
+        if search_active:
+            _append_search_text(event.data)
+            return
         _select_all(nodes, selected)
 
     @kb.add("n")
     def _none(event):
+        if search_active:
+            _append_search_text(event.data)
+            return
         _deselect_all(selected)
+
+    @kb.add("/")
+    def _start_search(event):
+        nonlocal search_active
+        if search_active:
+            _append_search_text(event.data)
+            return
+        search_active = True
+
+    @kb.add("backspace")
+    def _search_backspace(event):
+        nonlocal search_query
+        if not search_active:
+            return
+        search_query = search_query[:-1]
+        _set_cursor_to_first_visible()
+
+    @kb.add("c-h")
+    def _search_ctrl_h(event):
+        _search_backspace(event)
+
+    @kb.add("<any>")
+    def _search_type(event):
+        if not search_active:
+            return
+        _append_search_text(event.data)
 
     @kb.add("enter")
     def _confirm(event):
@@ -321,6 +425,15 @@ def interactive_select_grouped(
         event.app.exit()
 
     @kb.add("escape")
+    def _escape(event):
+        nonlocal cancelled, search_active
+        if search_active:
+            search_active = False
+            _set_cursor_to_first_visible()
+            return
+        cancelled = True
+        event.app.exit()
+
     @kb.add("c-c")
     def _cancel(event):
         nonlocal cancelled
